@@ -3,12 +3,35 @@ import { api, Settings } from '../api';
 import { Card, Seg, Field, TextInput, Button, confirmDialog } from '../components/ui';
 import { setUnits, todayISO } from '../util';
 import { showToast } from '../components/Toast';
+import { parseStrongCsv } from '../lib/strongParse';
 
 export function SettingsScreen({ settings, onChange }: { settings: Settings; onChange: (s: Settings) => void }) {
   const [rest, setRest] = useState(settings.default_rest);
   const [goal, setGoal] = useState(settings.weekly_goal);
   const [busy, setBusy] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const strongRef = useRef<HTMLInputElement>(null);
+  const [strongMsg, setStrongMsg] = useState<string | null>(null);
+
+  async function importStrong(files: FileList | null) {
+    if (!files || !files[0]) return;
+    setBusy(true); setStrongMsg(null);
+    try {
+      const { workouts, warnings } = parseStrongCsv(await files[0].text());
+      if (workouts.length === 0) { setStrongMsg(warnings[0] || 'No workouts found.'); return; }
+      const r = await api.importStrong(workouts);
+      setStrongMsg(
+        `Imported ${r.imported} workouts${r.skipped ? ` (${r.skipped} already imported)` : ''}.` +
+        (r.exercises_created.length ? ` Added to library: ${r.exercises_created.join(', ')}.` : '')
+      );
+      if (r.imported > 0) showToast(`${r.imported} workouts imported`, 'ok');
+    } catch (e: any) {
+      setStrongMsg('Import failed: ' + e.message);
+    } finally {
+      setBusy(false);
+      if (strongRef.current) strongRef.current.value = '';
+    }
+  }
 
   async function save(patch: Partial<Settings>) {
     try {
@@ -85,6 +108,18 @@ export function SettingsScreen({ settings, onChange }: { settings: Settings; onC
           <Button small kind="ghost" disabled={busy} onClick={() => fileRef.current?.click()}>Import backup</Button>
         </div>
         <input ref={fileRef} type="file" accept=".ironlog,.db,application/octet-stream" className="hidden" onChange={(e) => importBackup(e.target.files)} />
+      </Card>
+
+      <Card className="p-4">
+        <div className="text-[14px] font-semibold mb-1">Import from Strong</div>
+        <p className="text-[12.5px] text-mut leading-relaxed mb-3">
+          Bring your workout history from the Strong app (Settings → Export Data → CSV).
+          History, PRs, and suggested weights all carry over. Weights import as-is, so set
+          your units above to match Strong first. Safe to re-import — duplicates are skipped.
+        </p>
+        <Button small kind="ghost" disabled={busy} onClick={() => strongRef.current?.click()}>Import Strong CSV</Button>
+        <input ref={strongRef} type="file" accept=".csv,text/csv" className="hidden" onChange={(e) => importStrong(e.target.files)} />
+        {strongMsg && <div className="text-[12.5px] mt-2 text-mut">{strongMsg}</div>}
       </Card>
 
       <Card className="p-4">

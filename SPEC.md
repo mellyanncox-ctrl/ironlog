@@ -10,7 +10,8 @@ Local-first strength training tracker. Original product inspired by the utility 
 
 - **Layer A (built):** file import. Garmin Connect exports any activity as TCX/GPX/original FIT, and full-account CSV/JSON exports. Ironlog imports FIT, TCX, GPX, and Garmin CSV.
 - **Layer B (built):** mock/demo Garmin data generator so reports work without a device export.
-- **Layer C (future):** official OAuth Activity/Health API adapter — import pipeline is normalized so a webhook/OAuth source can slot in if business credentials are ever obtained.
+- **Layer C (built, July 2026):** pull-based auto-sync. A scheduled GitHub Actions job in the user's private repo (see `/sync`) authenticates with a long-lived Garmin OAuth token via garth 0.6.3 (pinned: Garmin's March-2026 Cloudflare fingerprinting broke newer login flows; token *refresh* is unaffected), publishes a normalized `data/sync.json` snapshot, and the app fetches it on launch using a repo-scoped read-only GitHub token stored on-device (`api.garmin.sync`, `lib/remoteSync.ts`). Same dedupe pipeline as file import; manual "Sync now" on the Garmin screen.
+- **Layer D (built, July 2026):** Strong app migration. `lib/strongParse.ts` parses Strong CSV exports into completed workouts (warm-up flags, RPE, per-exercise rest timers, notes; bogus multi-hour durations replaced with a sets-based estimate), maps exercise names onto the seeded library with explicit + heuristic matching (assisted variants never merge into the base lift), and `api.importStrong` writes idempotent history (skip on matching `started_at` + `source='strong'`). Entry point: Settings → Import from Strong.
 
 Garmin data supported from files: activity type, start time, duration, calories, avg/max HR, training load (FIT `training_load_peak` where present). Sleep/steps/body battery/stress come only from the full account export (JSON/CSV) — importer accepts Garmin wellness CSVs where available.
 

@@ -1,8 +1,85 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { api, GarminActivity, GarminDaily } from '../api';
-import { Card, Button, Spinner, Empty, confirmDialog } from '../components/ui';
+import { Card, Button, Spinner, Empty, confirmDialog, Field, TextInput } from '../components/ui';
 import { parseGarminFile } from '../lib/garminParse';
 import { fmtDate, fmtTime, fmtDuration, fmtDistance, cap } from '../util';
+
+function AutoSyncCard({ onImported }: { onImported: () => void }) {
+  const [cfg, setCfg] = useState<{ repo: string; has_token: boolean; last_sync_at: string | null } | null>(null);
+  const [repo, setRepo] = useState('');
+  const [token, setToken] = useState('');
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ kind: 'ok' | 'warn'; text: string } | null>(null);
+
+  const load = () => api.garmin.sync.config().then((c) => { setCfg(c); setRepo(c.repo); });
+  useEffect(() => { load(); }, []);
+
+  async function saveAndSync() {
+    setBusy(true); setMsg(null);
+    try {
+      await api.garmin.sync.configure(repo, token);
+      setToken('');
+      const r = await api.garmin.sync.now(true);
+      if (r.state === 'ok') { setMsg({ kind: 'ok', text: `Synced: ${r.activities} new activities, ${r.daily} wellness days.` }); onImported(); }
+      else if (r.state === 'nochange') setMsg({ kind: 'ok', text: 'Up to date — nothing new.' });
+      else if (r.state === 'error') setMsg({ kind: 'warn', text: r.message });
+      else setMsg({ kind: 'warn', text: 'Enter the repo and token first.' });
+      load();
+    } catch (e: any) {
+      setMsg({ kind: 'warn', text: e.message });
+    } finally { setBusy(false); }
+  }
+
+  if (!cfg) return null;
+  const configured = cfg.repo && cfg.has_token;
+  return (
+    <Card className="p-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="text-[15px] font-semibold">Auto-sync</div>
+          <div className="text-[12px] text-mut mt-0.5">
+            {configured
+              ? `Pulls new Garmin data on every launch.${cfg.last_sync_at ? ` Last checked ${fmtDate(cfg.last_sync_at)} ${fmtTime(cfg.last_sync_at)}.` : ''}`
+              : 'Do a run → it appears here next time you open the app.'}
+          </div>
+        </div>
+        <Button small kind="ghost" onClick={() => setOpen(!open)}>{open ? 'Close' : configured ? 'Edit' : 'Set up'}</Button>
+      </div>
+      {configured && !open && (
+        <div className="mt-3">
+          <Button small disabled={busy} onClick={saveAndSync}>{busy ? 'Syncing…' : 'Sync now'}</Button>
+        </div>
+      )}
+      {open && (
+        <div className="mt-3">
+          <p className="text-[12.5px] text-mut leading-relaxed mb-3">
+            Needs the one-time setup in the project's <span className="font-medium">sync/README.md</span>: a private
+            GitHub repo where a scheduled job publishes your Garmin data, plus a read-only token for it.
+            Both stay on this device.
+          </p>
+          <Field label="Sync repo (owner/repo)">
+            <TextInput value={repo} onChange={(e) => setRepo(e.target.value)} placeholder="you/ironlog-sync" autoCapitalize="none" autoCorrect="off" />
+          </Field>
+          <Field label={cfg.has_token ? 'GitHub token (saved — leave blank to keep)' : 'GitHub token (fine-grained, Contents: read-only)'}>
+            <TextInput type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder={cfg.has_token ? '••••••••' : 'github_pat_…'} autoCapitalize="none" autoCorrect="off" />
+          </Field>
+          <div className="flex gap-2">
+            <Button small disabled={busy || !repo.trim()} onClick={saveAndSync}>{busy ? 'Syncing…' : 'Save & sync'}</Button>
+            {configured && (
+              <Button small kind="danger" onClick={async () => {
+                if (!confirmDialog('Turn off auto-sync and forget the token?')) return;
+                await api.garmin.sync.configure('', '');
+                setRepo(''); setToken(''); setMsg(null); setOpen(false); load();
+              }}>Turn off</Button>
+            )}
+          </div>
+        </div>
+      )}
+      {msg && <div className={`text-[13px] mt-3 ${msg.kind === 'ok' ? 'text-good' : 'text-accent'}`}>{msg.text}</div>}
+    </Card>
+  );
+}
 
 const TYPE_ICON: Record<string, string> = {
   strength_training: '🏋️', running: '🏃', cycling: '🚴', walking: '🚶',
@@ -54,6 +131,8 @@ export function Garmin() {
 
   return (
     <div className="px-4 pt-2 pb-6 space-y-4">
+      <AutoSyncCard onImported={reload} />
+
       <Card className="p-4">
         <div className="text-[15px] font-semibold mb-1">Import Garmin data</div>
         <p className="text-[12.5px] text-mut leading-relaxed mb-3">

@@ -14,6 +14,7 @@ import { SettingsScreen } from './screens/Settings';
 import { WorkoutScreen } from './screens/Workout';
 import { RestTimerBar } from './components/RestTimer';
 import { Spinner } from './components/ui';
+import { showToast } from './components/Toast';
 
 function useHashRoute(): [string, (r: string) => void] {
   const [route, setRoute] = useState(location.hash.slice(2) || '');
@@ -50,6 +51,14 @@ export default function App() {
       setUnits(b.settings.units);
       setBoot(b);
       if (b.active_workout) setActiveId(b.active_workout.id);
+      // Garmin auto-sync: fire-and-forget on launch, silent unless it found something new.
+      if (navigator.onLine !== false) {
+        api.garmin.sync.now().then((r) => {
+          if (r.state === 'ok' && (r.activities > 0 || r.daily > 0)) {
+            showToast(`Garmin: ${r.activities} new ${r.activities === 1 ? 'activity' : 'activities'}, ${r.daily} wellness days`, 'ok');
+          }
+        }).catch(() => {});
+      }
     });
   }, []);
 

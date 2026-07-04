@@ -218,7 +218,7 @@ function text(parent: Element, tag: string): string {
   const el = parent.getElementsByTagName(tag)[0];
   return el && el.textContent ? el.textContent.trim() : '';
 }
-function csvRows(s: string): string[][] {
+export function csvRows(s: string): string[][] {
   const rows: string[][] = [];
   let row: string[] = [], cur = '', inQ = false;
   for (let i = 0; i < s.length; i++) {

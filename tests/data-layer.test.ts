@@ -214,7 +214,70 @@ async function throws(fn: () => Promise<any>, name: string, match?: RegExp) {
   const pace = (wr2 as any).running.avg_pace_s_per_km;
   ok(pace != null && pace >= 250 && pace <= 450, `avg pace computed (${pace}s/km)`);
 
-  console.log('17. Settings validation');
+  console.log('17. Garmin remote auto-sync');
+  const snap = {
+    version: 1, generated_at: '2026-07-04T10:00:00Z',
+    activities: [{ activity_type: 'running', name: 'Synced run', started_at: '2026-07-03T07:00:00', duration_s: 1800, distance_m: 6000, avg_hr: 148 }],
+    daily: [{ date: '2026-07-03', steps: 11000, resting_hr: 51, sleep_seconds: 26000, sleep_score: 80, body_battery: 75, stress: 25 }],
+  };
+  const fakeFetch = (body: any, status = 200) =>
+    (async () => ({ ok: status >= 200 && status < 300, status, json: async () => body })) as unknown as typeof fetch;
+  ok((await api.garmin.sync.now()).state === 'unconfigured', 'sync unconfigured without repo+token');
+  await throws(() => api.garmin.sync.configure('not a repo', 'tok'), 'bad repo format rejected', /owner\/repo/);
+  await api.garmin.sync.configure('mel/ironlog-sync', 'tok');
+  const cfg = await api.garmin.sync.config();
+  ok(cfg.repo === 'mel/ironlog-sync' && cfg.has_token, 'sync config saved');
+  const s1 = await api.garmin.sync.now(false, fakeFetch(snap));
+  ok(s1.state === 'ok' && (s1 as any).activities === 1 && (s1 as any).daily === 1, `snapshot imported (${JSON.stringify(s1)})`);
+  const syncedRun = (await api.garmin.activities()).find((a) => a.name === 'Synced run');
+  ok(syncedRun != null && syncedRun.source === 'sync' && syncedRun.distance_m === 6000, 'synced activity stored with source=sync');
+  const s2 = await api.garmin.sync.now(false, fakeFetch(snap));
+  ok(s2.state === 'nochange', 'same generated_at skips re-import');
+  const s3 = await api.garmin.sync.now(true, fakeFetch({ ...snap, generated_at: '2026-07-04T11:00:00Z' }));
+  ok(s3.state === 'ok' && (s3 as any).activities === 0, 'forced resync dedupes existing activities');
+  const s4 = await api.garmin.sync.now(true, fakeFetch({}, 401));
+  ok(s4.state === 'error' && /token/.test((s4 as any).message), 'bad token surfaces clear error');
+  const s5 = await api.garmin.sync.now(true, fakeFetch({ hello: 'world' }));
+  ok(s5.state === 'error' && /format/.test((s5 as any).message), 'malformed snapshot rejected');
+  await api.garmin.sync.configure('', '');
+  ok((await api.garmin.sync.now()).state === 'unconfigured', 'clearing repo disables sync');
+
+  console.log('18. Strong CSV history import');
+  const { parseStrongCsv, matchStrongExercise } = await import('../app/src/lib/strongParse');
+  const strongCsv = [
+    'Date,Workout Name,Duration,Exercise Name,Set Order,Weight,Reps,Distance,Seconds,Notes,Workout Notes,RPE',
+    '2025-11-03 07:01:00,"ST Leg Day",55m,"Squat (Barbell)",W,40.0,5.0,0,0.0,"","",',
+    '2025-11-03 07:01:00,"ST Leg Day",55m,"Squat (Barbell)",1,80.0,5.0,0,0.0,"felt strong","",8',
+    '2025-11-03 07:01:00,"ST Leg Day",55m,"Squat (Barbell)",Rest Timer,0,0.0,0,180.0,,,',
+    '2025-11-03 07:01:00,"ST Leg Day",55m,"Squat (Barbell)",2,80.0,5.0,0,0.0,,,9',
+    '2025-11-03 07:01:00,"ST Leg Day",55m,"Frog Pumps",1,20.0,15.0,0,0.0,,,',
+    '2025-11-04 07:00:00,"ST Push",145h 27m,"Chest Press (Machine)",1,30.0,10.0,0,0.0,,"tired today",',
+  ].join('\n');
+  const parsed = parseStrongCsv(strongCsv);
+  ok(parsed.workouts.length === 2, `parsed 2 workouts (${parsed.workouts.length})`);
+  const leg = parsed.workouts[0];
+  ok(leg.exercises[0].sets.length === 3 && leg.exercises[0].sets[0].set_type === 'warmup', 'warm-up set flagged, rest-timer rows skipped');
+  ok(leg.exercises[0].rest_seconds === 180, 'per-exercise rest timer captured');
+  ok(leg.exercises[0].sets[1].rpe === 8, 'RPE carried over');
+  const m1 = matchStrongExercise('Squat (Barbell)', await api.exercises.list());
+  ok(m1.kind === 'existing', 'Squat (Barbell) maps to library Back Squat');
+  const m2 = matchStrongExercise('Pull Up (Assisted)', await api.exercises.list());
+  ok(m2.kind === 'create', 'assisted variant never merged into base lift');
+  const stBefore = (await api.workouts.list(200)).length;
+  const imp1 = await api.importStrong(parsed.workouts);
+  ok(imp1.imported === 2 && imp1.skipped === 0, `imported 2 workouts (${JSON.stringify(imp1)})`);
+  ok(imp1.exercises_created.includes('Frog Pumps'), 'unknown movement became custom exercise');
+  const stAfter = await api.workouts.list(200);
+  ok(stAfter.length === stBefore + 2, 'workouts visible in history');
+  const legDay = stAfter.find((w) => w.name === 'ST Leg Day')!;
+  ok(legDay != null && legDay.sets === 3 && legDay.volume === 80 * 5 * 2 + 20 * 15, `sets + volume computed, warmup excluded (${legDay?.volume})`);
+  const push = await api.workouts.get(stAfter.find((w) => w.name === 'ST Push')!.id);
+  const pushDurH = (new Date(push.ended_at!).getTime() - new Date(push.started_at).getTime()) / 3600000;
+  ok(pushDurH <= 2, `bogus 145h duration replaced with estimate (${pushDurH.toFixed(1)}h)`);
+  const reimp = await api.importStrong(parsed.workouts);
+  ok(reimp.imported === 0 && reimp.skipped === 2, 're-import is a no-op (idempotent)');
+
+  console.log('19. Settings validation');
   await throws(() => api.settings.put({ units: 'stone' as any }), 'bad units rejected');
   await throws(() => api.settings.put({ default_rest: '0' }), 'zero rest rejected');
   const s = await api.settings.put({ units: 'lb' });

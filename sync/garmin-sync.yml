@@ -1,0 +1,50 @@
+# Ironlog Garmin sync — place at .github/workflows/garmin-sync.yml in your
+# PRIVATE sync repo (see sync/README.md for full setup).
+name: Garmin sync
+
+on:
+  schedule:
+    - cron: '17 * * * *'   # hourly (off the top of the hour — GitHub throttles :00)
+  workflow_dispatch:
+    inputs:
+      backfill:
+        description: 'Fetch full activity history (run once after setup)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: garmin-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - run: pip install -r requirements.txt
+
+      - name: Sync from Garmin
+        env:
+          GARTH_TOKEN: ${{ secrets.GARTH_TOKEN }}
+        run: |
+          if [ "${{ inputs.backfill }}" = "true" ]; then
+            python garmin_sync.py backfill --out data/sync.json
+          else
+            python garmin_sync.py sync --out data/sync.json
+          fi
+
+      - name: Commit if changed
+        run: |
+          git config user.name 'ironlog-sync'
+          git config user.email 'sync@users.noreply.github.com'
+          git add data/sync.json
+          git diff --cached --quiet || git commit -m "garmin sync $(date -u +%FT%TZ)"
+          git push

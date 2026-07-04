@@ -7,6 +7,8 @@ import * as stats from './db/stats';
 import * as reportsMod from './db/reports';
 import { suggestions as suggestionsFn } from './db/suggestions';
 import * as garminMod from './db/garmin';
+import { fetchSyncSnapshot, REPO_RE, type SyncOutcome } from './lib/remoteSync';
+import { matchStrongExercise, type StrongWorkout } from './lib/strongParse';
 import { seed as seedDemo } from './db/seed-demo';
 import { localISO, localDate } from './db/dates';
 
@@ -504,6 +506,54 @@ export const api = {
       await ok();
       return getDb().prepare("SELECT * FROM garmin_activities WHERE activity_type = 'running' ORDER BY started_at DESC LIMIT ?").all(limit) as GarminActivity[];
     },
+
+    // Auto-sync: pulls the snapshot published by the /sync job from a private
+    // GitHub repo. Config (incl. the read-only token) lives in the on-device
+    // settings table and never leaves the device except in user-made backups.
+    sync: {
+      config: async () => {
+        await ok();
+        return {
+          repo: getSetting('garmin_sync_repo', ''),
+          has_token: !!getSetting('garmin_sync_token', ''),
+          last_sync_at: getSetting('garmin_sync_at', '') || null,
+        };
+      },
+      configure: async (repo: string, token: string) => {
+        await ok();
+        const r = String(repo || '').trim();
+        const t = String(token || '').trim();
+        if (r && !REPO_RE.test(r)) throw new UserError('Repo must look like owner/repo');
+        setSetting('garmin_sync_repo', r);
+        // blank token + existing repo = keep the stored token; clearing the repo clears everything
+        if (t || !r) { setSetting('garmin_sync_token', t); }
+        if (!r) { setSetting('garmin_sync_generated', ''); setSetting('garmin_sync_at', ''); }
+        await flush();
+        return { repo: r, has_token: !!getSetting('garmin_sync_token', '') };
+      },
+      now: async (force = false, fetchFn?: typeof fetch): Promise<SyncOutcome> => {
+        await ok();
+        const repo = getSetting('garmin_sync_repo', '');
+        const token = getSetting('garmin_sync_token', '');
+        if (!repo || !token) return { state: 'unconfigured' };
+        try {
+          const snap = await fetchSyncSnapshot(repo, token, fetchFn ?? fetch);
+          if (!force && snap.generated_at && snap.generated_at === getSetting('garmin_sync_generated', '')) {
+            setSetting('garmin_sync_at', localISO());
+            await flush();
+            return { state: 'nochange' };
+          }
+          const a = await garminMod.importActivities(snap.activities, 'sync');
+          const d = garminMod.importDaily(snap.daily, 'sync');
+          setSetting('garmin_sync_generated', snap.generated_at || '');
+          setSetting('garmin_sync_at', localISO());
+          await flush();
+          return { state: 'ok', activities: a.imported, daily: d.imported };
+        } catch (e: any) {
+          return { state: 'error', message: e?.message || 'Sync failed' };
+        }
+      },
+    },
   },
 
   photos: {
@@ -551,6 +601,68 @@ export const api = {
   },
 
   demoSeed: async () => { await ok(); const r = seedDemo(); await flush(); return r; },
+
+  // Import completed workout history from a Strong app CSV export (parsed by
+  // lib/strongParse). Idempotent: a workout with the same started_at that was
+  // previously imported from Strong is skipped, so re-importing the same or a
+  // newer export is always safe.
+  importStrong: async (parsed: StrongWorkout[]) => {
+    await ok();
+    const result = withTx(() => {
+      const db = getDb();
+      let imported = 0, skipped = 0;
+      const created: string[] = [];
+      const cache = new Map<string, number>();
+      const resolveExercise = (strongName: string): number => {
+        const hit = cache.get(strongName);
+        if (hit != null) return hit;
+        const lib = db.prepare('SELECT id, name FROM exercises').all() as { id: number; name: string }[];
+        const m = matchStrongExercise(strongName, lib);
+        let id: number;
+        if (m.kind === 'existing') id = m.id;
+        else {
+          id = db.prepare('INSERT INTO exercises (name, muscle, secondary, equipment, is_custom) VALUES (?, ?, ?, ?, 1)')
+            .run(m.name, m.muscle, '', m.equipment).lastInsertRowid as number;
+          created.push(m.name);
+        }
+        cache.set(strongName, id);
+        return id;
+      };
+
+      const exists = db.prepare("SELECT id FROM workouts WHERE started_at = ? AND source = 'strong'");
+      for (const w of parsed || []) {
+        if (!w?.started_at || !Array.isArray(w.exercises) || w.exercises.length === 0) { skipped++; continue; }
+        if (exists.get(w.started_at)) { skipped++; continue; }
+        const start = new Date(w.started_at);
+        if (Number.isNaN(start.getTime())) { skipped++; continue; }
+        const totalSets = w.exercises.reduce((n, e) => n + e.sets.length, 0);
+        // guard against left-running timers (e.g. "145h 27m") with a sets-based estimate
+        const dur = w.duration_s != null && w.duration_s >= 60 && w.duration_s <= 6 * 3600
+          ? w.duration_s
+          : Math.min(7200, Math.max(1200, totalSets * 180));
+        const ended = new Date(start.getTime() + dur * 1000);
+        const wid = db.prepare("INSERT INTO workouts (name, started_at, ended_at, notes, source) VALUES (?, ?, ?, ?, 'strong')")
+          .run(String(w.name || 'Workout').slice(0, 120), localISO(start), localISO(ended), String(w.notes || '').slice(0, 2000)).lastInsertRowid;
+        let setIdx = 0;
+        w.exercises.forEach((e, pos) => {
+          const weId = db.prepare('INSERT INTO workout_exercises (workout_id, exercise_id, position, rest_seconds, notes) VALUES (?, ?, ?, ?, ?)')
+            .run(wid, resolveExercise(e.name), pos, e.rest_seconds ?? Number(getSetting('default_rest', '120')), String(e.notes || '').slice(0, 500)).lastInsertRowid;
+          e.sets.forEach((s, i) => {
+            setIdx++;
+            const at = new Date(start.getTime() + (dur * 1000 * setIdx) / (totalSets + 1));
+            db.prepare('INSERT INTO sets (workout_exercise_id, position, set_type, weight, reps, rpe, completed, completed_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?)')
+              .run(weId, i, s.set_type === 'warmup' ? 'warmup' : 'working',
+                numOrNull(s.weight, 0, 2000), s.reps != null ? Math.min(1000, Math.max(0, Math.round(s.reps))) : null,
+                numOrNull(s.rpe, 1, 10), localISO(at));
+          });
+        });
+        imported++;
+      }
+      return { imported, skipped, exercises_created: created };
+    });
+    await flush();
+    return result;
+  },
 
   // Backup container v2 (.ironlog): SQLite db + all progress photos in one file.
   // Legacy raw .db files (v1 backups) still import.

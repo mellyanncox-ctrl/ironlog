@@ -29,14 +29,27 @@ Your data lives only on your device. **Settings → Export backup** downloads a 
 
 ## Garmin
 
-Garmin's official Connect API is business-use only (no personal tier), so Ironlog imports files:
+**Auto-sync (recommended):** do a run → it's in Ironlog next time you open the app. A scheduled
+job in a private GitHub repo pulls from Garmin hourly and the app imports on launch. One-time
+setup (~10 min) in [`sync/README.md`](sync/README.md), then configure **More → Garmin → Auto-sync**.
+
+Garmin's official Connect API is business-use only (no personal tier), so file import also works, no setup needed:
 
 - **Single activity:** Garmin Connect → activity → ⚙ → *Export to TCX* (or *Export Original* for FIT).
 - **Bulk:** Activities list → *Export CSV*.
 - **Sleep / steps / stress / Body Battery:** wellness CSV or account-data-export JSON.
 - No device? **Generate demo data** fakes 30 days so you can see recovery flow into reports.
 
-Imports are deduplicated — re-importing the same file is safe. Try the files in `sample-data/`.
+Imports are deduplicated — re-importing the same file (or syncing over a file import) is safe.
+Try the files in `sample-data/`.
+
+## Coming from Strong?
+
+**Settings → Import from Strong** takes Strong's CSV export (Strong app → Settings → Export Data)
+and brings over your full workout history: exercises map onto Ironlog's library (unknown movements
+become custom exercises), warm-up flags, RPE, per-exercise rest timers, and notes all carry over,
+and PRs, charts, and suggested next weights compute from day one. Set your units (kg/lb) to match
+Strong before importing. Idempotent — re-importing skips duplicates.
 
 ## Development
 
@@ -45,7 +58,7 @@ React + TypeScript + Tailwind, SQLite via sql.js (WASM), PWA via vite-plugin-pwa
 ```bash
 npm install
 npm run dev        # dev server
-npm test           # 75 assertions: data engine + UI smoke + Garmin parsers
+npm test           # 117 assertions: data engine + UI smoke + Garmin parsers + auto-sync + Strong import
 npm run build      # production build to dist/
 npm start          # preview the production build locally
 ```
