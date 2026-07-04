@@ -13,19 +13,13 @@ export interface Storage {
   save(bytes: Uint8Array): Promise<void>;
 }
 
-const IDB_NAME = 'ironlog';
+import { openIdb } from './photos';
+
 const IDB_STORE = 'db';
 const IDB_KEY = 'main';
 
 export class IdbStorage implements Storage {
-  private open(): Promise<IDBDatabase> {
-    return new Promise((resolve, reject) => {
-      const req = indexedDB.open(IDB_NAME, 1);
-      req.onupgradeneeded = () => req.result.createObjectStore(IDB_STORE);
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error);
-    });
-  }
+  private open(): Promise<IDBDatabase> { return openIdb(); }
   async load(): Promise<Uint8Array | null> {
     const idb = await this.open();
     return new Promise((resolve, reject) => {

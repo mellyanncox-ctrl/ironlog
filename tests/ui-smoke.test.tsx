@@ -55,7 +55,9 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
   await mountRoute('progress', ['Training volume', 'Muscle group volume']);
   await mountRoute('reports', ['workouts', 'volume']);
   await mountRoute('garmin', ['Import Garmin data']);
-  await mountRoute('more', ['Exercise library', 'Settings']);
+  await mountRoute('runs', ['runs this month', 'All runs']);
+  await mountRoute('photos', ['No progress shots yet']);
+  await mountRoute('more', ['Exercise library', 'Progress photos', 'Runs', 'Settings']);
   await mountRoute('settings', ['Units', 'Backup', 'Export backup']);
 
   const w = await api.workouts.list(1);
@@ -99,6 +101,9 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
     const res2 = await parseGarminFile(new NodeFile([csv], 'activities.csv') as any);
     if (res2.activities.length === 5 && res2.activities[0].activity_type === 'strength_training') { passed++; console.log('  ✓ activities CSV parser'); }
     else { failed++; console.log(`  ✗ activities CSV parser ${JSON.stringify(res2).slice(0, 200)}`); }
+    const runRow = res2.activities.find((a: any) => a.activity_type === 'running');
+    if (runRow && runRow.distance_m === 5200) { passed++; console.log('  ✓ CSV run distance (5.2 km → 5200 m)'); }
+    else { failed++; console.log(`  ✗ CSV run distance ${JSON.stringify(runRow)}`); }
 
     const wcsv = fs.readFileSync(sample('sample-wellness.csv'), 'utf8');
     const res3 = await parseGarminFile(new NodeFile([wcsv], 'wellness.csv') as any);

@@ -23,11 +23,10 @@ export function SettingsScreen({ settings, onChange }: { settings: Settings; onC
   async function exportBackup() {
     setBusy(true);
     try {
-      const bytes = await api.backup.export();
-      const blob = new Blob([bytes as BlobPart], { type: 'application/octet-stream' });
+      const blob = await api.backup.export();
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
-      a.download = `ironlog-backup-${todayISO()}.db`;
+      a.download = `ironlog-backup-${todayISO()}.ironlog`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -46,8 +45,7 @@ export function SettingsScreen({ settings, onChange }: { settings: Settings; onC
     }
     setBusy(true);
     try {
-      const bytes = new Uint8Array(await files[0].arrayBuffer());
-      await api.backup.import(bytes);
+      await api.backup.import(files[0]);
       showToast('Backup restored', 'ok');
       setTimeout(() => location.reload(), 600);
     } catch (e: any) {
@@ -80,13 +78,13 @@ export function SettingsScreen({ settings, onChange }: { settings: Settings; onC
         <p className="text-[12.5px] text-mut leading-relaxed mb-3">
           All data lives on this device. Export a backup file regularly — if the app is deleted
           or the browser clears its storage, the backup is the only way to get your history back.
-          Backups restore on any device running Ironlog.
+          Backups include your progress photos and restore on any device running Ironlog.
         </p>
         <div className="flex gap-2">
           <Button small kind="ghost" disabled={busy} onClick={exportBackup}>Export backup</Button>
           <Button small kind="ghost" disabled={busy} onClick={() => fileRef.current?.click()}>Import backup</Button>
         </div>
-        <input ref={fileRef} type="file" accept=".db,application/octet-stream" className="hidden" onChange={(e) => importBackup(e.target.files)} />
+        <input ref={fileRef} type="file" accept=".ironlog,.db,application/octet-stream" className="hidden" onChange={(e) => importBackup(e.target.files)} />
       </Card>
 
       <Card className="p-4">

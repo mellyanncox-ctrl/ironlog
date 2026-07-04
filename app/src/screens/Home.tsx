@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { api, Overview, Template, GarminDaily, WorkoutSummary } from '../api';
+import { api, Overview, Template, GarminDaily, WorkoutSummary, GarminActivity, ProgressPhoto } from '../api';
 import { Card, Button, Stat, Pill } from '../components/ui';
-import { fmtVolume, fmtDate, todayDow, DOW, fmtDuration } from '../util';
+import { fmtVolume, fmtDate, todayDow, DOW, fmtDuration, fmtDistance, fmtPace, isoWeekStartLocal, todayISO } from '../util';
 
 export function Home({ onStartTemplate, onStartBlank, onResume, activeId, onNav }: {
   onStartTemplate: (id: number) => void; onStartBlank: () => void;
@@ -11,15 +11,20 @@ export function Home({ onStartTemplate, onStartBlank, onResume, activeId, onNav 
   const [templates, setTemplates] = useState<Template[]>([]);
   const [recent, setRecent] = useState<WorkoutSummary[]>([]);
   const [daily, setDaily] = useState<GarminDaily[]>([]);
+  const [lastRun, setLastRun] = useState<GarminActivity | null>(null);
+  const [photos, setPhotos] = useState<ProgressPhoto[]>([]);
 
   useEffect(() => {
     api.stats.overview().then(setOv);
     api.templates.list().then(setTemplates);
     api.workouts.list(3).then(setRecent);
     api.garmin.daily().then(setDaily).catch(() => {});
+    api.garmin.runs(1).then((r) => setLastRun(r[0] || null)).catch(() => {});
+    api.photos.list().then(setPhotos).catch(() => {});
   }, [activeId]);
 
   const today = todayDow();
+  const shotThisWeek = photos.some((p) => isoWeekStartLocal(p.date) === isoWeekStartLocal(todayISO()));
   const todays = templates.filter((t) => t.day_of_week === today);
   const upcoming = templates.filter((t) => t.day_of_week != null && t.day_of_week !== today)
     .sort((a, b) => ((a.day_of_week! - today + 7) % 7) - ((b.day_of_week! - today + 7) % 7))[0];
@@ -85,6 +90,35 @@ export function Home({ onStartTemplate, onStartBlank, onResume, activeId, onNav 
             <Stat label="body battery" value={latestDaily.body_battery ?? '–'} />
             <Stat label="stress" value={latestDaily.stress ?? '–'} />
             <Stat label="resting HR" value={latestDaily.resting_hr ?? '–'} />
+          </Card>
+        </div>
+      )}
+
+      {/* weekly progress shot nudge */}
+      {ov && ov.total_workouts > 0 && !shotThisWeek && (
+        <Card className="px-4 py-3" onClick={() => onNav('photos')}>
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-[14px] font-semibold">📸 Weekly progress shot</div>
+              <div className="text-[12px] text-mut">None logged this week — takes 20 seconds</div>
+            </div>
+            <span className="text-accent text-[14px] font-semibold">Add ›</span>
+          </div>
+        </Card>
+      )}
+
+      {/* last run */}
+      {lastRun && (
+        <div>
+          <SectionTitle>Last run</SectionTitle>
+          <Card className="px-4 py-3" onClick={() => onNav('runs')}>
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-[14px] font-semibold">🏃 {fmtDistance(lastRun.distance_m)} · {fmtPace(lastRun.duration_s, lastRun.distance_m)}</div>
+                <div className="text-[12px] text-mut">{fmtDate(lastRun.started_at)} · {fmtDuration(lastRun.duration_s)}{lastRun.avg_hr ? ` · ♥ ${lastRun.avg_hr} bpm` : ''}</div>
+              </div>
+              <span className="text-dim">›</span>
+            </div>
           </Card>
         </div>
       )}

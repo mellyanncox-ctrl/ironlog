@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { api, Report } from '../api';
 import { Card, Seg, Spinner, Stat } from '../components/ui';
 import { HBarList } from '../components/charts';
-import { fmtVolume, fmtWeight, fmtDate, MUSCLE_COLORS, todayISO } from '../util';
+import { fmtVolume, fmtWeight, fmtDate, MUSCLE_COLORS, todayISO, fmtDistance, fmtDuration, getUnits } from '../util';
 
 export function Reports({ onNav }: { onNav: (r: string) => void }) {
   const [mode, setMode] = useState<'weekly' | 'monthly'>('weekly');
@@ -82,6 +82,20 @@ export function Reports({ onNav }: { onNav: (r: string) => void }) {
             </Card>
           )}
 
+          {(report as any).running && (
+            <Card className="p-4">
+              <div className="text-[13px] font-semibold text-blue mb-2">🏃 Running</div>
+              <div className="grid grid-cols-3 gap-y-3">
+                <Mini label="Runs" v={(report as any).running.runs} />
+                <Mini label="Distance" v={fmtDistance((report as any).running.distance_m)} />
+                <Mini label="Time" v={fmtDuration((report as any).running.duration_s)} />
+                <Mini label="Avg pace" v={(report as any).running.avg_pace_s_per_km != null ? paceStr((report as any).running.avg_pace_s_per_km) : '–'} />
+                <Mini label="Avg HR" v={(report as any).running.avg_hr ?? '–'} />
+                <Mini label="Longest" v={(report as any).running.longest_m ? fmtDistance((report as any).running.longest_m) : '–'} />
+              </div>
+            </Card>
+          )}
+
           {report.recovery && (
             <Card className="p-4">
               <div className="text-[13px] font-semibold text-mut mb-2">Recovery <span className="text-dim font-normal">· Garmin · {report.recovery.days} days</span></div>
@@ -117,6 +131,12 @@ export function Reports({ onNav }: { onNav: (r: string) => void }) {
       )}
     </div>
   );
+}
+
+// report stores pace as s/km; convert for display units
+function paceStr(sPerKm: number): string {
+  const s = getUnits() === 'lb' ? sPerKm * 1.609344 : sPerKm;
+  return `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')} /${getUnits() === 'lb' ? 'mi' : 'km'}`;
 }
 
 function Mini({ label, v }: { label: string; v: React.ReactNode }) {

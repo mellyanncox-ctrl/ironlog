@@ -33,22 +33,31 @@ export async function importActivities(items: any[], source = 'file') {
     rows.push({ a, started, type, hash });
   }
   withTx(() => {
+    // re-importing a richer file (e.g. FIT after CSV) backfills distance on the existing row
     const ins = db.prepare(`
-      INSERT INTO garmin_activities (hash, activity_type, name, started_at, duration_s, calories, avg_hr, max_hr, training_load, source)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(hash) DO NOTHING
+      INSERT INTO garmin_activities (hash, activity_type, name, started_at, duration_s, distance_m, calories, avg_hr, max_hr, training_load, source)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(hash) DO UPDATE SET
+        distance_m = COALESCE(garmin_activities.distance_m, excluded.distance_m),
+        avg_hr = COALESCE(garmin_activities.avg_hr, excluded.avg_hr),
+        max_hr = COALESCE(garmin_activities.max_hr, excluded.max_hr),
+        calories = COALESCE(garmin_activities.calories, excluded.calories),
+        training_load = COALESCE(garmin_activities.training_load, excluded.training_load)
     `);
+    const exists = db.prepare('SELECT id FROM garmin_activities WHERE hash = ?');
     for (const { a, started, type, hash } of rows) {
-      const res = ins.run(
+      const already = exists.get(hash);
+      ins.run(
         hash, type, String(a.name || ''), started,
         a.duration_s != null ? Math.round(Number(a.duration_s)) : null,
+        a.distance_m != null && !Number.isNaN(Number(a.distance_m)) ? Math.round(Number(a.distance_m)) : null,
         a.calories != null ? Math.round(Number(a.calories)) : null,
         a.avg_hr != null ? Math.round(Number(a.avg_hr)) : null,
         a.max_hr != null ? Math.round(Number(a.max_hr)) : null,
         a.training_load != null && !Number.isNaN(Number(a.training_load)) ? Number(a.training_load) : null,
         source
       );
-      res.changes > 0 ? imported++ : skipped++;
+      already ? skipped++ : imported++;
     }
   });
   return { imported, skipped };
@@ -115,9 +124,12 @@ export async function generateDemo(days = 30) {
     }
     if (dow === 6 && rand() > 0.3) {
       const start = new Date(d); start.setHours(9, 30, 0, 0);
+      const dur = Math.round(1800 + rand() * 1500);
+      const paceSecPerKm = 310 + rand() * 60; // ~5:10–6:10 /km
       acts.push({
         activity_type: 'running', name: 'Easy run',
-        started_at: localISO(start), duration_s: Math.round(1800 + rand() * 1500),
+        started_at: localISO(start), duration_s: dur,
+        distance_m: Math.round((dur / paceSecPerKm) * 1000),
         calories: Math.round(350 + rand() * 200), avg_hr: Math.round(138 + rand() * 15),
         max_hr: Math.round(165 + rand() * 15), training_load: Math.round(60 + rand() * 50),
       });

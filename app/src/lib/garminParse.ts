@@ -4,7 +4,7 @@ import FitParser from 'fit-file-parser';
 
 export type NormActivity = {
   activity_type: string; name: string; started_at: string;
-  duration_s: number | null; calories: number | null;
+  duration_s: number | null; distance_m: number | null; calories: number | null;
   avg_hr: number | null; max_hr: number | null; training_load: number | null;
 };
 export type NormDaily = {
@@ -40,6 +40,7 @@ function parseFit(buf: ArrayBuffer): Promise<ParseResult> {
           name: s.sport ? cap(String(s.sport)) : 'Activity',
           started_at: start.toISOString(),
           duration_s: num(s.total_timer_time ?? s.total_elapsed_time),
+          distance_m: num(s.total_distance),
           calories: num(s.total_calories),
           avg_hr: num(s.avg_heart_rate),
           max_hr: num(s.max_heart_rate),
@@ -53,9 +54,11 @@ function parseFit(buf: ArrayBuffer): Promise<ParseResult> {
           const start = new Date(recs[0].timestamp);
           const end = new Date(recs[recs.length - 1].timestamp);
           const hrs = recs.map((r: any) => r.heart_rate).filter((h: any) => h != null);
+          const dists = recs.map((r: any) => r.distance).filter((d: any) => d != null);
           acts.push({
             activity_type: 'other', name: 'Activity', started_at: start.toISOString(),
             duration_s: Math.round((end.getTime() - start.getTime()) / 1000),
+            distance_m: dists.length ? num(dists[dists.length - 1]) : null,
             calories: null,
             avg_hr: hrs.length ? Math.round(hrs.reduce((a: number, b: number) => a + b, 0) / hrs.length) : null,
             max_hr: hrs.length ? Math.max(...hrs) : null, training_load: null,
@@ -75,11 +78,12 @@ function parseTcx(xml: string): ParseResult {
     const laps = Array.from(el.getElementsByTagName('Lap'));
     if (laps.length === 0) continue;
     const start = laps[0].getAttribute('StartTime');
-    let dur = 0, cal = 0;
+    let dur = 0, cal = 0, dist = 0;
     const hrs: number[] = []; let maxHr = 0;
     for (const lap of laps) {
       dur += Number(text(lap, 'TotalTimeSeconds')) || 0;
       cal += Number(text(lap, 'Calories')) || 0;
+      dist += Number(text(lap, 'DistanceMeters')) || 0;
       const avg = lap.getElementsByTagName('AverageHeartRateBpm')[0];
       if (avg) hrs.push(Number(text(avg, 'Value')) || 0);
       const mx = lap.getElementsByTagName('MaximumHeartRateBpm')[0];
@@ -88,7 +92,7 @@ function parseTcx(xml: string): ParseResult {
     if (!start) continue;
     acts.push({
       activity_type: normType(sport), name: sport, started_at: new Date(start).toISOString(),
-      duration_s: Math.round(dur), calories: cal || null,
+      duration_s: Math.round(dur), distance_m: dist ? Math.round(dist) : null, calories: cal || null,
       avg_hr: hrs.length ? Math.round(hrs.reduce((a, b) => a + b, 0) / hrs.length) : null,
       max_hr: maxHr || null, training_load: null,
     });
@@ -105,12 +109,19 @@ function parseGpx(xml: string, filename: string): ParseResult {
   const nameEl = doc.getElementsByTagName('name')[0];
   const hrs = Array.from(doc.getElementsByTagName('gpxtpx:hr')).concat(Array.from(doc.getElementsByTagName('hr')))
     .map((el) => Number(el.textContent)).filter((n) => n > 0);
+  // distance from trackpoints (haversine)
+  const pts = Array.from(doc.getElementsByTagName('trkpt'))
+    .map((p) => ({ lat: Number(p.getAttribute('lat')), lon: Number(p.getAttribute('lon')) }))
+    .filter((p) => !Number.isNaN(p.lat) && !Number.isNaN(p.lon));
+  let dist = 0;
+  for (let i = 1; i < pts.length; i++) dist += haversineM(pts[i - 1].lat, pts[i - 1].lon, pts[i].lat, pts[i].lon);
   return {
     activities: [{
       activity_type: normType(typeEl?.textContent || 'other'),
       name: nameEl?.textContent || filename,
       started_at: start.toISOString(),
       duration_s: Math.round((end.getTime() - start.getTime()) / 1000),
+      distance_m: dist > 0 ? Math.round(dist) : null,
       calories: null,
       avg_hr: hrs.length ? Math.round(hrs.reduce((a, b) => a + b, 0) / hrs.length) : null,
       max_hr: hrs.length ? Math.max(...hrs) : null, training_load: null,
@@ -127,7 +138,7 @@ function parseCsv(textContent: string): ParseResult {
 
   const iType = idx('activity type'), iDate = idx('date'), iTitle = idx('title', 'name'),
     iDur = idx('time', 'duration'), iCal = idx('calories'), iAvgHr = idx('avg hr', 'average hr', 'avg. hr'),
-    iMaxHr = idx('max hr', 'max. hr'), iLoad = idx('training load', 'load');
+    iMaxHr = idx('max hr', 'max. hr'), iLoad = idx('training load', 'load'), iDist = idx('distance');
 
   // wellness columns
   const iSteps = idx('steps'), iRhr = idx('resting heart rate', 'resting hr'),
@@ -145,11 +156,15 @@ function parseCsv(textContent: string): ParseResult {
     if (isActivityCsv) {
       const dt = parseDate(r[iDate]);
       if (!dt) continue;
+      // Garmin's activities CSV reports distance in the account's unit (km for
+      // metric accounts). Values are treated as km; sub-metre GPS noise (<1) is kept as-is in km too.
+      const distRaw = iDist >= 0 ? numStr(r[iDist]) : null;
       activities.push({
         activity_type: normType(r[iType] || 'other'),
         name: iTitle >= 0 ? r[iTitle] : r[iType],
         started_at: dt.toISOString(),
         duration_s: iDur >= 0 ? parseDuration(r[iDur]) : null,
+        distance_m: distRaw != null && distRaw > 0 ? Math.round(distRaw * 1000) : null,
         calories: iCal >= 0 ? numStr(r[iCal]) : null,
         avg_hr: iAvgHr >= 0 ? numStr(r[iAvgHr]) : null,
         max_hr: iMaxHr >= 0 ? numStr(r[iMaxHr]) : null,
@@ -245,6 +260,12 @@ function numStr(s: string | undefined): number | null {
   return Number.isNaN(n) || s === '--' ? null : n;
 }
 function num(v: any): number | null { const n = Number(v); return Number.isNaN(n) ? null : Math.round(n); }
+function haversineM(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371000, toRad = (d: number) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1), dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
 function cap(s: string) { return s ? s[0].toUpperCase() + s.slice(1) : s; }
 function normType(t: string): string {
   const s = t.toLowerCase().trim().replace(/\s+/g, '_');

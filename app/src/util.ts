@@ -60,6 +60,26 @@ export function todayDow(): number { return (new Date().getDay() + 6) % 7; }
 export function cap(s: string): string { return s ? s[0].toUpperCase() + s.slice(1) : s; }
 export function cx(...parts: (string | false | null | undefined)[]): string { return parts.filter(Boolean).join(' '); }
 
+// Distance in km or miles per unit setting; pace as min/km or min/mi.
+export function fmtDistance(m: number | null | undefined): string {
+  if (m == null) return '—';
+  const v = getUnits() === 'lb' ? m / 1609.344 : m / 1000;
+  return `${v >= 10 ? v.toFixed(1) : v.toFixed(2)} ${getUnits() === 'lb' ? 'mi' : 'km'}`;
+}
+export function fmtPace(durationS: number | null | undefined, distanceM: number | null | undefined): string {
+  if (!durationS || !distanceM || distanceM <= 0) return '—';
+  const unitM = getUnits() === 'lb' ? 1609.344 : 1000;
+  const secPerUnit = durationS / (distanceM / unitM);
+  const min = Math.floor(secPerUnit / 60), sec = Math.round(secPerUnit % 60);
+  return `${min}:${String(sec).padStart(2, '0')} /${getUnits() === 'lb' ? 'mi' : 'km'}`;
+}
+export function isoWeekStartLocal(dateISO: string): string {
+  const d = new Date(dateISO.length === 10 ? dateISO + 'T00:00:00' : dateISO);
+  const dow = (d.getDay() + 6) % 7;
+  d.setDate(d.getDate() - dow);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
 export const MUSCLE_COLORS: Record<string, string> = {
   chest: '#ff9f0a', back: '#0a84ff', shoulders: '#ffd60a', biceps: '#bf5af2',
   triceps: '#5e5ce6', forearms: '#64d2ff', quads: '#30d158', hamstrings: '#66d4cf',

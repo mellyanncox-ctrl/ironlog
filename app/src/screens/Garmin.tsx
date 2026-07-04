@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { api, GarminActivity, GarminDaily } from '../api';
 import { Card, Button, Spinner, Empty, confirmDialog } from '../components/ui';
 import { parseGarminFile } from '../lib/garminParse';
-import { fmtDate, fmtTime, fmtDuration, cap } from '../util';
+import { fmtDate, fmtTime, fmtDuration, fmtDistance, cap } from '../util';
 
 const TYPE_ICON: Record<string, string> = {
   strength_training: '🏋️', running: '🏃', cycling: '🚴', walking: '🚶',
@@ -121,7 +121,7 @@ export function Garmin() {
                     <div className="text-[12px] text-mut">{fmtDate(a.started_at)} · {fmtTime(a.started_at)}</div>
                   </div>
                   <div className="text-right text-[12px] text-mut tabular-nums shrink-0">
-                    <div>{fmtDuration(a.duration_s)}{a.calories ? ` · ${a.calories} kcal` : ''}</div>
+                    <div>{a.distance_m ? `${fmtDistance(a.distance_m)} · ` : ''}{fmtDuration(a.duration_s)}{a.calories ? ` · ${a.calories} kcal` : ''}</div>
                     <div>{a.avg_hr ? `♥ ${a.avg_hr}${a.max_hr ? `/${a.max_hr}` : ''} bpm` : ''}{a.training_load ? ` · load ${Math.round(a.training_load)}` : ''}</div>
                   </div>
                 </div>

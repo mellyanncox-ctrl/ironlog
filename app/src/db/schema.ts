@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS garmin_activities (
   name TEXT DEFAULT '',
   started_at TEXT NOT NULL,
   duration_s INTEGER,
+  distance_m INTEGER,
   calories INTEGER,
   avg_hr INTEGER,
   max_hr INTEGER,
@@ -88,6 +89,16 @@ CREATE TABLE IF NOT EXISTS garmin_daily (
   body_battery INTEGER,
   stress INTEGER,
   source TEXT NOT NULL DEFAULT 'file'
+);
+CREATE TABLE IF NOT EXISTS progress_photos (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  date TEXT NOT NULL,              -- YYYY-MM-DD
+  note TEXT DEFAULT '',
+  blob_key TEXT NOT NULL UNIQUE,   -- key into the photo blob store
+  width INTEGER,
+  height INTEGER,
+  size INTEGER,
+  created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
@@ -198,6 +209,8 @@ export function migrate(): void {
   const db = getDb();
   db.exec('PRAGMA foreign_keys = ON;');
   db.exec(SCHEMA);
+  // additive migrations for databases created before these columns existed
+  try { db.exec('ALTER TABLE garmin_activities ADD COLUMN distance_m INTEGER'); } catch { /* already there */ }
   const n = db.prepare('SELECT COUNT(*) AS n FROM exercises').get()!.n as number;
   if (n === 0) {
     const ins = db.prepare('INSERT INTO exercises (name, muscle, secondary, equipment) VALUES (?, ?, ?, ?)');

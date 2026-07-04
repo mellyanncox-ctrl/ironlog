@@ -1,6 +1,7 @@
 // Ironlog data API — runs entirely on-device (SQLite WASM + IndexedDB).
 // Same surface as the old HTTP client, so screens are unchanged.
 import { initDb, getDb, withTx, exportBytes, importBytes, flush, type Storage } from './db/sqlite';
+import { IdbPhotoStore, MemoryPhotoStore, newPhotoKey, type PhotoStore } from './db/photos';
 import { migrate, getSetting, setSetting, allSettings, MUSCLES, EQUIPMENT } from './db/schema';
 import * as stats from './db/stats';
 import * as reportsMod from './db/reports';
@@ -61,8 +62,12 @@ export type Overview = {
 export type Settings = { units: 'kg' | 'lb'; default_rest: string; weekly_goal: string };
 export type GarminActivity = {
   id: number; activity_type: string; name: string; started_at: string;
-  duration_s: number | null; calories: number | null; avg_hr: number | null;
+  duration_s: number | null; distance_m: number | null; calories: number | null; avg_hr: number | null;
   max_hr: number | null; training_load: number | null; source: string;
+};
+export type ProgressPhoto = {
+  id: number; date: string; note: string; blob_key: string;
+  width: number | null; height: number | null; size: number | null; created_at: string;
 };
 export type GarminDaily = {
   id: number; date: string; steps: number | null; resting_hr: number | null;
@@ -88,8 +93,10 @@ export type ExerciseStats = {
 
 // ---------- init ----------
 let ready: Promise<void> | null = null;
-export function initData(opts?: { storage?: Storage; wasmUrl?: string }): Promise<void> {
+let photoStore: PhotoStore;
+export function initData(opts?: { storage?: Storage; wasmUrl?: string; photoStore?: PhotoStore }): Promise<void> {
   if (!ready) {
+    photoStore = opts?.photoStore ?? (typeof indexedDB !== 'undefined' ? new IdbPhotoStore() : new MemoryPhotoStore());
     ready = initDb(opts).then(() => {
       migrate();
       reconcileActiveWorkouts();
@@ -493,12 +500,111 @@ export const api = {
     },
     demo: async (days = 30) => { await ok(); const r = await garminMod.generateDemo(days); await flush(); return r; },
     clear: async () => { await ok(); getDb().exec('DELETE FROM garmin_activities; DELETE FROM garmin_daily;'); await flush(); return { cleared: true }; },
+    runs: async (limit = 200): Promise<GarminActivity[]> => {
+      await ok();
+      return getDb().prepare("SELECT * FROM garmin_activities WHERE activity_type = 'running' ORDER BY started_at DESC LIMIT ?").all(limit) as GarminActivity[];
+    },
+  },
+
+  photos: {
+    list: async (): Promise<ProgressPhoto[]> => {
+      await ok();
+      return getDb().prepare('SELECT * FROM progress_photos ORDER BY date DESC, id DESC').all() as ProgressPhoto[];
+    },
+    add: async (p: { blob: Blob; date: string; note?: string; width?: number; height?: number }): Promise<ProgressPhoto> => {
+      await ok();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(p.date || '')) throw new UserError('Enter a valid date');
+      if (!p.blob || p.blob.size === 0) throw new UserError('No image data');
+      if (p.blob.size > 8_000_000) throw new UserError('Image too large after processing');
+      const key = newPhotoKey();
+      await photoStore.put(key, p.blob);
+      try {
+        const id = getDb().prepare('INSERT INTO progress_photos (date, note, blob_key, width, height, size, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+          .run(p.date, String(p.note || '').slice(0, 300), key, p.width ?? null, p.height ?? null, p.blob.size, localISO()).lastInsertRowid;
+        await flush();
+        return getDb().prepare('SELECT * FROM progress_photos WHERE id = ?').get(id) as ProgressPhoto;
+      } catch (e) {
+        await photoStore.remove(key); // don't leak orphaned blobs
+        throw e;
+      }
+    },
+    blob: async (blob_key: string): Promise<Blob | null> => { await ok(); return photoStore.get(blob_key); },
+    updateNote: async (id: number, note: string) => {
+      await ok();
+      getDb().prepare('UPDATE progress_photos SET note = ? WHERE id = ?').run(String(note || '').slice(0, 300), id);
+      return getDb().prepare('SELECT * FROM progress_photos WHERE id = ?').get(id) as ProgressPhoto;
+    },
+    remove: async (id: number) => {
+      await ok();
+      const row = getDb().prepare('SELECT blob_key FROM progress_photos WHERE id = ?').get(id);
+      getDb().prepare('DELETE FROM progress_photos WHERE id = ?').run(id);
+      if (row) await photoStore.remove(row.blob_key as string);
+      await flush();
+      return { deleted: true };
+    },
+    // bodyweight logged nearest (on or before) a date — shown next to photos
+    nearestWeight: async (date: string): Promise<number | null> => {
+      await ok();
+      const row = getDb().prepare('SELECT weight FROM body_weight WHERE date <= ? ORDER BY date DESC LIMIT 1').get(date);
+      return row ? (row.weight as number) : null;
+    },
   },
 
   demoSeed: async () => { await ok(); const r = seedDemo(); await flush(); return r; },
 
+  // Backup container v2 (.ironlog): SQLite db + all progress photos in one file.
+  // Legacy raw .db files (v1 backups) still import.
   backup: {
-    export: async (): Promise<Uint8Array> => { await ok(); await flush(); return exportBytes(); },
-    import: async (bytes: Uint8Array) => { await ok(); await importBytes(bytes); return { ok: true }; },
+    export: async (): Promise<Blob> => {
+      await ok();
+      await flush();
+      const db = exportBytes();
+      const rows = getDb().prepare('SELECT blob_key FROM progress_photos ORDER BY id').all();
+      const photos: { key: string; size: number; type: string }[] = [];
+      const parts: BlobPart[] = [];
+      for (const r of rows) {
+        const b = await photoStore.get(r.blob_key as string);
+        if (!b) continue; // metadata without blob — skip rather than fail
+        photos.push({ key: r.blob_key as string, size: b.size, type: b.type || 'image/jpeg' });
+        parts.push(b);
+      }
+      const index = new TextEncoder().encode(JSON.stringify({ version: 2, db_len: db.length, photos }));
+      const head = new Uint8Array(12);
+      head.set(new TextEncoder().encode('IRONLOG2'), 0);
+      new DataView(head.buffer).setUint32(8, index.length, true);
+      return new Blob([head, index, db as BlobPart, ...parts], { type: 'application/octet-stream' });
+    },
+    import: async (input: Blob | Uint8Array) => {
+      await ok();
+      const blob = input instanceof Uint8Array ? new Blob([input as BlobPart]) : input;
+      const head = new Uint8Array(await blob.slice(0, 12).arrayBuffer());
+      const magic = new TextDecoder().decode(head.slice(0, 8));
+      if (magic === 'IRONLOG2') {
+        const indexLen = new DataView(head.buffer).getUint32(8, true);
+        if (indexLen > 10_000_000) throw new UserError('Not an Ironlog backup file');
+        let index: any;
+        try { index = JSON.parse(new TextDecoder().decode(await blob.slice(12, 12 + indexLen).arrayBuffer())); }
+        catch { throw new UserError('Not an Ironlog backup file'); }
+        const dbStart = 12 + indexLen;
+        const dbBytes = new Uint8Array(await blob.slice(dbStart, dbStart + index.db_len).arrayBuffer());
+        await importBytes(dbBytes); // validates it's an Ironlog SQLite db
+        migrate(); // backups from older versions gain new tables/columns
+        await photoStore.clear();
+        let offset = dbStart + index.db_len;
+        for (const p of index.photos || []) {
+          const b = blob.slice(offset, offset + p.size, p.type);
+          await photoStore.put(p.key, b);
+          offset += p.size;
+        }
+        return { ok: true, photos: (index.photos || []).length };
+      }
+      // legacy: raw SQLite file
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      await importBytes(bytes);
+      migrate(); // older schema gains new tables/columns
+      await photoStore.clear(); // legacy backups carry no photos
+      getDb().exec('DELETE FROM progress_photos'); // keep metadata consistent with empty blob store
+      return { ok: true, photos: 0 };
+    },
   },
 };

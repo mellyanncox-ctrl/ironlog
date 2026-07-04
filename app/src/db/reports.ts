@@ -65,6 +65,21 @@ function periodReport(startISO: string, endISO: string, label: string) {
 
   const garminActivities = db.prepare('SELECT COUNT(*) AS n FROM garmin_activities WHERE substr(started_at, 1, 10) >= ? AND substr(started_at, 1, 10) < ?').get(startISO, endISO)!.n as number;
 
+  // running block
+  const runs = db.prepare("SELECT * FROM garmin_activities WHERE activity_type = 'running' AND substr(started_at, 1, 10) >= ? AND substr(started_at, 1, 10) < ? ORDER BY started_at").all(startISO, endISO);
+  const runDist = runs.reduce((a, r) => a + (r.distance_m || 0), 0);
+  const runDur = runs.filter((r) => r.distance_m && r.duration_s).reduce((a, r) => a + (r.duration_s as number), 0);
+  const runDistForPace = runs.filter((r) => r.distance_m && r.duration_s).reduce((a, r) => a + (r.distance_m as number), 0);
+  const runHrs = runs.map((r) => r.avg_hr).filter((x) => x != null) as number[];
+  const running = runs.length ? {
+    runs: runs.length,
+    distance_m: Math.round(runDist),
+    duration_s: runs.reduce((a, r) => a + (r.duration_s || 0), 0),
+    avg_pace_s_per_km: runDistForPace > 0 ? Math.round(runDur / (runDistForPace / 1000)) : null,
+    avg_hr: runHrs.length ? Math.round(runHrs.reduce((a, b) => a + b, 0) / runHrs.length) : null,
+    longest_m: Math.max(0, ...runs.map((r) => (r.distance_m as number) || 0)) || null,
+  } : null;
+
   const notes: string[] = [];
   if (recovery) {
     if (recovery.avg_sleep_h != null && recovery.avg_sleep_h < 7) notes.push(`Average sleep was ${recovery.avg_sleep_h}h — under the 7h floor. Recovery is likely limiting performance.`);
@@ -104,6 +119,7 @@ function periodReport(startISO: string, endISO: string, label: string) {
     recovery,
     recovery_notes: notes,
     garmin_activities: garminActivities,
+    running,
     suggestions,
   };
 }

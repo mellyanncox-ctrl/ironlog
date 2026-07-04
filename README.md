@@ -1,6 +1,6 @@
 # Ironlog
 
-A local-first strength training app that installs on your iPhone. Workout logging, routines, PRs, progress charts, weekly/monthly reports, smart training suggestions, and Garmin import.
+A local-first strength training app that installs on your iPhone. Workout logging, routines, PRs, progress charts, weekly progress photos, run tracking (distance/pace/mileage), weekly/monthly reports, smart training suggestions, and Garmin import.
 
 All data lives in an on-device SQLite database (WASM + browser storage). No account, no cloud, no telemetry — GitHub only hosts the code, never your data. Works fully offline at the gym.
 
@@ -19,11 +19,13 @@ Updates ship by pushing to `main`; the app picks them up next time you open it.
 2. **Routines** → the sample PPL routine is scheduled Mon/Wed/Fri; today's session appears on Home.
 3. Tap **Start** — log sets with weight/reps/RPE. Tapping ✓ starts the rest timer. Tap a set's number badge to cycle its type (working → warm-up → drop → failure); double-tap it to delete the set. The ⋯ menu supersets an exercise with the previous one.
 4. **Progress** → charts (volume, e1RM per lift, muscle balance, bodyweight), Records, and Coach (improving/stalled lifts, fatigue and deload warnings, next-session weight targets).
-5. **More → Reports** for weekly/monthly summaries; **More → Garmin** to import watch data.
+5. **More → Progress photos** — one shot a week (Home reminds you), grouped by week, with side-by-side compare and bodyweight context. Photos stay on-device and are included in backups.
+6. **More → Runs** — every imported Garmin run with distance, pace, and HR, plus weekly mileage and best-pace stats. Runs also appear in weekly/monthly reports.
+7. **More → Reports** for weekly/monthly summaries; **More → Garmin import** for watch data.
 
 ## Backups — read this once
 
-Your data lives only on your device. **Settings → Export backup** downloads a single `.db` file; **Import backup** restores it (on any device — this is also how you move data between phone and computer). Export after big training blocks. If you delete the app or Safari clears site data, the backup is the only way back.
+Your data lives only on your device. **Settings → Export backup** downloads a single `.ironlog` file containing your database **and progress photos**; **Import backup** restores it (on any device — this is also how you move data between phone and computer; older `.db` backups still import). Export after big training blocks. If you delete the app or Safari clears site data, the backup is the only way back.
 
 ## Garmin
 

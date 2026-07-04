@@ -153,19 +153,68 @@ async function throws(fn: () => Promise<any>, name: string, match?: RegExp) {
   ok(recovered.ended_at != null, 'stray workout with completed sets auto-finished (data preserved)');
   await api.workouts.remove(stray3.id);
 
-  console.log('14. Persistence + backup round-trip');
+  console.log('14. Progress photos');
+  const jpeg = new Blob([new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 4, 5])], { type: 'image/jpeg' });
+  const photo = await api.photos.add({ blob: jpeg, date: '2026-07-01', note: 'front relaxed', width: 800, height: 1066 });
+  ok(photo.id > 0 && photo.blob_key.length > 0, 'photo metadata stored');
+  const gotBlob = await api.photos.blob(photo.blob_key);
+  ok(gotBlob != null && gotBlob.size === jpeg.size, 'photo blob stored and retrievable');
+  const plist = await api.photos.list();
+  ok(plist.length === 1 && plist[0].note === 'front relaxed', 'photo list');
+  const nw = await api.photos.nearestWeight('2026-07-01');
+  ok(nw != null && nw > 50, `nearest bodyweight found (${nw}kg)`);
+  await api.photos.updateNote(photo.id, 'front, morning');
+  ok((await api.photos.list())[0].note === 'front, morning', 'note editable');
+  await throws(() => api.photos.add({ blob: jpeg, date: 'not-a-date' }), 'bad photo date rejected', /valid date/);
+  await throws(() => api.photos.add({ blob: new Blob([]), date: '2026-07-01' }), 'empty image rejected', /No image data/);
+
+  console.log('15. Persistence + backup round-trip (incl. photos)');
   ok(storage.bytes != null && storage.bytes.length > 0, `data flushed to storage (${storage.bytes?.length} bytes)`);
   const backup = await api.backup.export();
+  ok(backup instanceof Blob && backup.size > 0, `backup container exported (${backup.size} bytes)`);
+  const magic = new TextDecoder().decode(new Uint8Array(await backup.slice(0, 8).arrayBuffer()));
+  ok(magic === 'IRONLOG2', 'backup uses v2 container format');
   const histBefore = (await api.workouts.list(100)).length;
   await api.workouts.create('Throwaway after backup');
-  await api.backup.import(backup);
+  await api.photos.remove(photo.id);
+  ok((await api.photos.list()).length === 0, 'photo deleted (with blob)');
+  const res = await api.backup.import(backup);
+  ok((res as any).photos === 1, 'backup import reports photo count');
   const histAfter = (await api.workouts.list(100)).length;
   ok(histAfter === histBefore, 'backup import restores exact snapshot');
+  const restoredPhotos = await api.photos.list();
+  const restoredBlob = restoredPhotos.length ? await api.photos.blob(restoredPhotos[0].blob_key) : null;
+  ok(restoredPhotos.length === 1 && restoredBlob != null && restoredBlob.size === jpeg.size, 'photo restored from backup (metadata + bytes)');
   const activeGone = await api.workouts.active();
   ok(activeGone == null, 'post-backup workout gone after restore');
+  // legacy v1 backup = raw SQLite bytes
+  const { exportBytes } = await import('../app/src/db/sqlite');
+  const legacy = exportBytes();
+  await api.backup.import(legacy);
+  ok((await api.workouts.list(100)).length === histBefore, 'legacy raw .db backup still imports');
   await throws(async () => api.backup.import(new TextEncoder().encode('not a database at all — just text')), 'garbage backup file rejected', /Not an Ironlog backup|file is not a database|database disk image/i);
 
-  console.log('15. Settings validation');
+  console.log('16. Runs (distance pipeline)');
+  const runTs = new Date(Date.now() - 3 * 86400000).toISOString();
+  await api.garmin.importActivities([
+    { activity_type: 'running', name: '5K', started_at: runTs, duration_s: 1500, distance_m: 5000, avg_hr: 152 },
+  ]);
+  const runsNow = await api.garmin.runs();
+  ok(runsNow.length >= 1 && runsNow.some((r) => r.distance_m === 5000), 'run stored with distance');
+  // re-import same activity (same hash) with extra data → backfills, no duplicate
+  const runCountBefore = runsNow.length;
+  await api.garmin.importActivities([
+    { activity_type: 'running', name: '5K', started_at: runTs, duration_s: 1500, distance_m: 5000, calories: 320, max_hr: 175 },
+  ]);
+  const runsAfter = await api.garmin.runs();
+  const enriched = runsAfter.find((r) => r.distance_m === 5000)!;
+  ok(runsAfter.length === runCountBefore && enriched.calories === 320 && enriched.max_hr === 175, 'duplicate run deduped + fields backfilled');
+  const wr2 = await api.reports.weekly();
+  ok((wr2 as any).running != null && (wr2 as any).running.distance_m >= 5000, `running block in weekly report (${(wr2 as any).running?.distance_m}m)`);
+  const pace = (wr2 as any).running.avg_pace_s_per_km;
+  ok(pace != null && pace >= 250 && pace <= 450, `avg pace computed (${pace}s/km)`);
+
+  console.log('17. Settings validation');
   await throws(() => api.settings.put({ units: 'stone' as any }), 'bad units rejected');
   await throws(() => api.settings.put({ default_rest: '0' }), 'zero rest rejected');
   const s = await api.settings.put({ units: 'lb' });
