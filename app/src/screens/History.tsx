@@ -1,20 +1,41 @@
 import React, { useEffect, useState } from 'react';
-import { api, WorkoutSummary, Workout } from '../api';
+import { api, WorkoutSummary, Workout, GarminActivity } from '../api';
 import { Card, Pill, Empty, Button, Spinner, confirmDialog, Sheet, Field, TextInput } from '../components/ui';
-import { fmtDate, fmtTime, fmtVolume, fmtWeight, fmtDuration, cx, kgOut, inKg, getUnits } from '../util';
+import { fmtDate, fmtTime, fmtVolume, fmtWeight, fmtDuration, fmtDistance, fmtPace, cx, kgOut, inKg, getUnits } from '../util';
+
+type HistoryItem =
+  | { kind: 'workout'; date: string; w: WorkoutSummary }
+  | { kind: 'garmin'; date: string; a: GarminActivity };
+
+const TYPE_ICON: Record<string, string> = {
+  running: '🏃', trail_running: '🏃', treadmill_running: '🏃',
+  cycling: '🚴', indoor_cycling: '🚴', swimming: '🏊', open_water_swimming: '🏊',
+  walking: '🚶', hiking: '🥾', strength_training: '🏋️', yoga: '🧘', rowing: '🚣',
+};
+const typeIcon = (t: string) => TYPE_ICON[t] || '⌚';
+const typeLabel = (t: string) => t.replace(/_/g, ' ').replace(/^\w/, (c) => c.toUpperCase());
 
 export function History({ onNav, onDuplicated }: { onNav: (r: string) => void; onDuplicated: () => void }) {
-  const [list, setList] = useState<WorkoutSummary[] | null>(null);
-  useEffect(() => { api.workouts.list(200).then(setList); }, []);
+  const [list, setList] = useState<HistoryItem[] | null>(null);
+  useEffect(() => {
+    Promise.all([api.workouts.list(200), api.garmin.activities(300)]).then(([ws, as]) => {
+      const items: HistoryItem[] = [
+        ...ws.map((w): HistoryItem => ({ kind: 'workout', date: w.started_at, w })),
+        ...as.map((a): HistoryItem => ({ kind: 'garmin', date: a.started_at, a })),
+      ];
+      items.sort((a, b) => b.date.localeCompare(a.date));
+      setList(items);
+    });
+  }, []);
   if (!list) return <Spinner />;
-  if (list.length === 0) return <Empty icon="📓" title="No workouts yet" sub="Finished workouts appear here with sets, volume, and PRs." />;
+  if (list.length === 0) return <Empty icon="📓" title="No workouts yet" sub="Finished workouts and Garmin activities appear here." />;
 
   // group by month
-  const groups: { label: string; items: WorkoutSummary[] }[] = [];
-  for (const w of list) {
-    const label = new Date(w.started_at).toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+  const groups: { label: string; items: HistoryItem[] }[] = [];
+  for (const it of list) {
+    const label = new Date(it.date).toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
     const g = groups.find((x) => x.label === label);
-    g ? g.items.push(w) : groups.push({ label, items: [w] });
+    g ? g.items.push(it) : groups.push({ label, items: [it] });
   }
 
   return (
@@ -23,16 +44,35 @@ export function History({ onNav, onDuplicated }: { onNav: (r: string) => void; o
         <div key={g.label}>
           <h2 className="text-[13px] font-semibold text-mut uppercase tracking-wide mb-2">{g.label}</h2>
           <div className="space-y-2">
-            {g.items.map((w) => (
-              <Card key={w.id} className="px-4 py-3" onClick={() => onNav(`history/${w.id}`)}>
-                <div className="flex items-center justify-between mb-0.5">
-                  <div className="text-[15px] font-semibold">{w.name}</div>
-                  {w.prs > 0 && <Pill color="#ff9f0a">🏆 {w.prs}</Pill>}
-                </div>
-                <div className="text-[12px] text-mut">{fmtDate(w.started_at)} · {w.sets} sets · {fmtVolume(w.volume)}</div>
-                <div className="text-[12px] text-dim truncate mt-0.5">{w.exercise_names.join(' · ')}</div>
-              </Card>
-            ))}
+            {g.items.map((it) =>
+              it.kind === 'workout' ? (
+                <Card key={`w${it.w.id}`} className="px-4 py-3" onClick={() => onNav(`history/${it.w.id}`)}>
+                  <div className="flex items-center justify-between mb-0.5">
+                    <div className="text-[15px] font-semibold">{it.w.name}</div>
+                    {it.w.prs > 0 && <Pill color="#ff9f0a">🏆 {it.w.prs}</Pill>}
+                  </div>
+                  <div className="text-[12px] text-mut">{fmtDate(it.w.started_at)} · {it.w.sets} sets · {fmtVolume(it.w.volume)}</div>
+                  <div className="text-[12px] text-dim truncate mt-0.5">{it.w.exercise_names.join(' · ')}</div>
+                </Card>
+              ) : (
+                <Card key={`g${it.a.id}`} className="px-4 py-3" onClick={it.a.activity_type === 'running' ? () => onNav('runs') : undefined}>
+                  <div className="flex items-center justify-between mb-0.5">
+                    <div className="text-[15px] font-semibold">{typeIcon(it.a.activity_type)} {it.a.name || typeLabel(it.a.activity_type)}</div>
+                    {it.a.distance_m != null && it.a.distance_m > 0 && (
+                      <div className="text-[13px] font-semibold text-accent tabular-nums">{fmtDistance(it.a.distance_m)}</div>
+                    )}
+                  </div>
+                  <div className="flex justify-between text-[12px] text-mut tabular-nums">
+                    <span>{fmtDate(it.a.started_at)} · {fmtTime(it.a.started_at)}</span>
+                    <span>
+                      {it.a.duration_s ? fmtDuration(it.a.duration_s) : ''}
+                      {it.a.activity_type === 'running' && it.a.duration_s && it.a.distance_m ? ` · ${fmtPace(it.a.duration_s, it.a.distance_m)}` : ''}
+                      {it.a.avg_hr ? ` · ♥ ${it.a.avg_hr}` : ''}
+                    </span>
+                  </div>
+                </Card>
+              )
+            )}
           </div>
         </div>
       ))}
