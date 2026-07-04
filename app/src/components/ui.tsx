@@ -15,7 +15,7 @@ export function Button({ children, onClick, kind = 'primary', className, disable
 }) {
   const base = small ? 'px-3 py-1.5 text-[13px] rounded-lg' : 'px-4 py-2.5 text-[15px] rounded-xl';
   const kinds = {
-    primary: 'bg-accent text-black font-semibold active:bg-accent-dim',
+    primary: 'bg-accent text-white font-semibold active:bg-accent-dim',
     ghost: 'bg-surface2 text-ink font-medium border border-edge active:bg-edge',
     subtle: 'bg-transparent text-accent font-medium active:opacity-60',
     danger: 'bg-transparent text-bad font-medium border border-edge active:bg-surface2',

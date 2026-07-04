@@ -887,6 +887,12 @@ export const api = {
         return db.prepare('SELECT * FROM nutrition_entries WHERE id = ?').get(id) as DiaryEntry;
       },
       remove: async (id: number) => { await ok(); getDb().prepare('DELETE FROM nutrition_entries WHERE id = ?').run(id); await flush(); return { deleted: true }; },
+      // Dates with at least one entry in [startISO, endISO] — powers the weekday strip.
+      loggedDates: async (startISO: string, endISO: string): Promise<string[]> => {
+        await ok();
+        const s = reqDate(startISO), e = reqDate(endISO);
+        return (getDb().prepare('SELECT DISTINCT date FROM nutrition_entries WHERE date >= ? AND date <= ? ORDER BY date').all(s, e) as any[]).map((r) => r.date as string);
+      },
       // Copy every entry from the most recent prior day that has any logs into `date`.
       duplicateYesterday: async (date: string) => {
         await ok();

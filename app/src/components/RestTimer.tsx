@@ -74,8 +74,8 @@ export function RestTimerBar() {
       <div className="bg-surface2/95 backdrop-blur border border-edge rounded-2xl px-4 py-2.5 flex items-center gap-3 shadow-xl shadow-black/40">
         <div className="relative w-9 h-9 shrink-0">
           <svg viewBox="0 0 36 36" className="w-9 h-9 -rotate-90">
-            <circle cx="18" cy="18" r="15" fill="none" stroke="#26262c" strokeWidth="3.5" />
-            <circle cx="18" cy="18" r="15" fill="none" stroke={left === 0 ? '#30d158' : '#ff9f0a'} strokeWidth="3.5"
+            <circle cx="18" cy="18" r="15" fill="none" stroke="#2b3440" strokeWidth="3.5" />
+            <circle cx="18" cy="18" r="15" fill="none" stroke={left === 0 ? '#2ec7a5' : '#4b93f8'} strokeWidth="3.5"
               strokeDasharray={`${pct * 94.2} 94.2`} strokeLinecap="round" />
           </svg>
         </div>

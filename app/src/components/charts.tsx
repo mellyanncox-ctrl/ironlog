@@ -3,7 +3,7 @@ import React, { useMemo, useState } from 'react';
 // Minimal, bespoke SVG charts — no library.
 type Pt = { x: string; y: number };
 
-export function LineChart({ data, height = 160, color = '#ff9f0a', unit = '', yFmt }: {
+export function LineChart({ data, height = 160, color = '#4b93f8', unit = '', yFmt }: {
   data: Pt[]; height?: number; color?: string; unit?: string; yFmt?: (v: number) => string;
 }) {
   const [hover, setHover] = useState<number | null>(null);
@@ -56,7 +56,7 @@ export function LineChart({ data, height = 160, color = '#ff9f0a', unit = '', yF
         <path d={path} fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
         {pts.map((p, i) => (
           <circle key={i} cx={p.cx} cy={p.cy} r={hover === i ? 4.5 : data.length <= 24 ? 2.5 : 0}
-            fill={hover === i ? color : '#0a0a0b'} stroke={color} strokeWidth="1.5" />
+            fill={hover === i ? color : '#0b0f17'} stroke={color} strokeWidth="1.5" />
         ))}
         {h && hover != null && <line x1={pts[hover].cx} y1={PT} x2={pts[hover].cx} y2={H - PB} stroke="#3a3a42" strokeDasharray="3 3" />}
         <text x={PL} y={H - 6} fill="#5b5b63" fontSize="10">{data[0].x}</text>
@@ -72,7 +72,7 @@ export function LineChart({ data, height = 160, color = '#ff9f0a', unit = '', yF
   );
 }
 
-export function BarChart({ data, height = 150, color = '#ff9f0a', yFmt }: {
+export function BarChart({ data, height = 150, color = '#4b93f8', yFmt }: {
   data: Pt[]; height?: number; color?: string; yFmt?: (v: number) => string;
 }) {
   const [hover, setHover] = useState<number | null>(null);
@@ -117,7 +117,7 @@ export function HBarList({ items, colors }: { items: { label: string; value: num
           <div className="w-20 text-[12px] text-mut capitalize truncate shrink-0">{it.label}</div>
           <div className="grow h-4 bg-surface2 rounded-md overflow-hidden">
             <div className="h-full rounded-md transition-all"
-              style={{ width: `${Math.max(2, (it.value / max) * 100)}%`, background: (colors && colors[it.label]) || '#ff9f0a' }} />
+              style={{ width: `${Math.max(2, (it.value / max) * 100)}%`, background: (colors && colors[it.label]) || '#4b93f8' }} />
           </div>
           <div className="w-12 text-right text-[12px] text-mut tabular-nums shrink-0">{it.pct != null ? `${it.pct}%` : Math.round(it.value)}</div>
         </div>

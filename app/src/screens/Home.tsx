@@ -209,7 +209,7 @@ function NutritionCard({ day, onNav }: { day: DayView; onNav: (r: string) => voi
       </div>
       {hasGoal && (
         <div className="h-1.5 rounded-full bg-surface2 overflow-hidden mb-2">
-          <div className="h-full rounded-full transition-all" style={{ width: `${Math.max(2, pct * 100)}%`, background: over ? '#ff453a' : '#ff9f0a' }} />
+          <div className="h-full rounded-full transition-all" style={{ width: `${Math.max(2, pct * 100)}%`, background: over ? '#ff5a52' : '#4b93f8' }} />
         </div>
       )}
       {tg?.protein != null && (

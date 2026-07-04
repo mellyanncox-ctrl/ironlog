@@ -1,24 +1,27 @@
 @import "tailwindcss";
 
 @theme {
-  --color-bg: #0a0a0b;
-  --color-surface: #141417;
-  --color-surface2: #1c1c21;
-  --color-edge: #26262c;
-  --color-ink: #f4f4f5;
-  --color-mut: #8e8e96;
-  --color-dim: #5b5b63;
-  --color-accent: #ff9f0a;
-  --color-accent-dim: #b36f07;
-  --color-good: #30d158;
-  --color-bad: #ff453a;
-  --color-blue: #0a84ff;
+  --color-bg: #0b0f17;
+  --color-surface: #151b25;
+  --color-surface2: #1e2531;
+  --color-edge: #2b3440;
+  --color-ink: #f4f7fb;
+  --color-mut: #8b94a6;
+  --color-dim: #59626f;
+  --color-accent: #4b93f8;
+  --color-accent-dim: #2f6fd0;
+  --color-good: #2ec7a5;
+  --color-bad: #ff5a52;
+  --color-blue: #4b93f8;
+  --color-protein: #f5a623;
+  --color-carbs: #2dd4bf;
+  --color-fat: #b57cf6;
   --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
 
 html { background: var(--color-bg); }
 body {
-  background: var(--color-bg);
+  background: radial-gradient(130% 55% at 50% 0%, #16202f 0%, #0b0f17 52%) no-repeat fixed;
   color: var(--color-ink);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
@@ -28,7 +31,7 @@ input, select, textarea { font: inherit; }
 input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
 input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 * { -webkit-tap-highlight-color: transparent; }
-::selection { background: rgba(255, 159, 10, 0.35); }
+::selection { background: rgba(75, 147, 248, 0.35); }
 
 .no-scrollbar::-webkit-scrollbar { display: none; }
 .no-scrollbar { scrollbar-width: none; }

@@ -166,7 +166,7 @@ function MiniField({ label, children }: { label: string; children: React.ReactNo
 function DayChip({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
   return (
     <button onClick={onClick} className={cx('px-3 py-1.5 rounded-full text-[12.5px] font-medium border',
-      active ? 'bg-accent text-black border-accent' : 'bg-surface2 text-mut border-edge')}>
+      active ? 'bg-accent text-white border-accent' : 'bg-surface2 text-mut border-edge')}>
       {label}
     </button>
   );

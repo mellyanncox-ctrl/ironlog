@@ -124,7 +124,7 @@ export default function App() {
       {/* resume pill */}
       {activeId && !showWorkout && (
         <button onClick={() => setShowWorkout(true)}
-          className="fixed left-4 right-4 bottom-[calc(env(safe-area-inset-bottom)+76px)] z-40 max-w-lg mx-auto bg-accent text-black font-semibold rounded-2xl py-3 text-[14px] shadow-xl shadow-black/50 animate-slideup">
+          className="fixed left-4 right-4 bottom-[calc(env(safe-area-inset-bottom)+76px)] z-40 max-w-lg mx-auto bg-accent text-white font-semibold rounded-2xl py-3 text-[14px] shadow-xl shadow-black/50 animate-slideup">
           ● Workout in progress — tap to resume
         </button>
       )}

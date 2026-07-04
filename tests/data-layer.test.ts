@@ -355,6 +355,8 @@ async function throws(fn: () => Promise<any>, name: string, match?: RegExp) {
   ok((await api.nutrition.water.add(T, 250)) === 750, 'water add accumulates');
   const ins = await api.nutrition.insights();
   ok(Array.isArray(ins), `insights returns an array (${ins.length} cards from demo data)`);
+  const logdays = await api.nutrition.diary.loggedDates('2031-03-10', '2031-03-13');
+  ok(logdays.includes('2031-03-11') && logdays.every((d) => d >= '2031-03-10' && d <= '2031-03-13'), `loggedDates returns dates in range (${logdays.length})`);
   const wrN = await api.reports.weekly();
   ok((wrN as any).nutrition != null && (wrN as any).nutrition.days_logged >= 1, 'weekly report merges a nutrition block');
   ok((await api.nutrition.foods.remove(cf.id) as any).archived === true, 'a food used in the diary is archived, not hard-deleted');

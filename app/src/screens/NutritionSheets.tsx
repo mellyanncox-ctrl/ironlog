@@ -360,7 +360,7 @@ export function GoalSheet({ open, onClose, goal, weight, onSaved }: {
 
       <label className="flex items-center justify-between py-2">
         <span className="text-[14px]">Auto-calculate targets</span>
-        <input type="checkbox" checked={!!v.auto} onChange={(e) => set('auto', e.target.checked)} className="w-5 h-5 accent-[#ff9f0a]" />
+        <input type="checkbox" checked={!!v.auto} onChange={(e) => set('auto', e.target.checked)} className="w-5 h-5 accent-[#4b93f8]" />
       </label>
       {!v.auto && (
         <div className="flex gap-2 mt-1">
@@ -372,7 +372,7 @@ export function GoalSheet({ open, onClose, goal, weight, onSaved }: {
       )}
       <label className="flex items-center justify-between py-2 border-t border-edge/60 mt-2">
         <span className="text-[14px]">Add workout calories to budget<span className="block text-[11.5px] text-mut">Off by default — avoids over-eating</span></span>
-        <input type="checkbox" checked={!!v.add_burned} onChange={(e) => set('add_burned', e.target.checked)} className="w-5 h-5 accent-[#ff9f0a]" />
+        <input type="checkbox" checked={!!v.add_burned} onChange={(e) => set('add_burned', e.target.checked)} className="w-5 h-5 accent-[#4b93f8]" />
       </label>
       <Button className="w-full mt-3" onClick={save}>Save goals</Button>
     </Sheet>
