@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api, DayView, MealType, NutritionInsight } from '../api';
-import { Card, Button, Spinner } from '../components/ui';
+import { Card, Spinner } from '../components/ui';
 import { CalorieBlock, MacroRow, MacroCol, WeekStrip, MealIcon, MACRO } from '../components/nutrition';
 import { LogFoodSheet, EntryEditSheet, GoalSheet, MealsScreen } from './NutritionSheets';
 import { showToast } from '../components/Toast';
@@ -41,6 +41,8 @@ export function Nutrition({ onNav }: { onNav: (r: string) => void }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [macroMode, setMacroMode] = useState<'eaten' | 'left'>('eaten');
   const [insights, setInsights] = useState<NutritionInsight[]>([]);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [insightsOpen, setInsightsOpen] = useState(false);
 
   const week = weekOf(date);
   function load() {
@@ -67,19 +69,46 @@ export function Nutrition({ onNav }: { onNav: (r: string) => void }) {
   const stripDays = week.map((w) => ({ ...w, logged: logged.has(w.iso), today: w.iso === todayISO() }));
 
   return (
-    <div className="px-4 pt-1 pb-4 space-y-4">
-      {/* header: day + streak */}
+    <div className="px-4 pt-2 pb-10 space-y-6">
+      {/* header: day + streak + menu */}
       <div className="flex items-center justify-between">
         <button onClick={() => setDate(todayISO())} className="flex items-center gap-1.5">
           <span className="text-[22px] font-bold tracking-tight">{dayLabel(date)}</span>
           {date !== todayISO() && <span className="text-[13px] text-accent font-medium">· Today</span>}
         </button>
-        {day.streak > 0 && (
-          <div className="flex items-center gap-1 bg-surface border border-edge rounded-full px-3 py-1">
-            <span className="text-[14px] font-bold tabular-nums">{day.streak}</span>
-            <span className="text-[13px]">🔥</span>
+        <div className="flex items-center gap-2">
+          {day.streak > 0 && (
+            <div className="flex items-center gap-1 bg-surface border border-edge rounded-full px-3 py-1">
+              <span className="text-[14px] font-bold tabular-nums">{day.streak}</span>
+              <span className="text-[13px]">🔥</span>
+            </div>
+          )}
+          <div className="relative">
+            <button onClick={() => setMenuOpen((o) => !o)}
+              className="w-9 h-9 rounded-full bg-surface border border-edge text-mut flex items-center justify-center active:bg-surface2"
+              title="More">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><circle cx="5" cy="12" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="19" cy="12" r="1.8" /></svg>
+            </button>
+            {menuOpen && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setMenuOpen(false)} />
+                <div className="absolute right-0 top-11 z-50 w-44 bg-surface border border-edge rounded-2xl shadow-xl overflow-hidden animate-fadein">
+                  {[
+                    { label: 'Copy yesterday', icon: '⧉', act: dupYesterday },
+                    { label: 'Meals', icon: '🍽', act: () => setView('meals') },
+                    { label: 'Goals', icon: '🎯', act: () => setGoalOpen(true) },
+                    { label: 'Reports', icon: '📊', act: () => onNav('reports') },
+                  ].map((it) => (
+                    <button key={it.label} onClick={() => { setMenuOpen(false); it.act(); }}
+                      className="w-full flex items-center gap-3 px-4 py-3 text-[14px] text-left active:bg-surface2 border-b border-edge/40 last:border-0">
+                      <span className="w-5 text-center">{it.icon}</span>{it.label}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
-        )}
+        </div>
       </div>
 
       {/* weekday strip */}
@@ -133,7 +162,7 @@ export function Nutrition({ onNav }: { onNav: (r: string) => void }) {
 
       {/* diary */}
       <div>
-        <div className="flex items-center justify-between mb-2 px-1">
+        <div className="flex items-center justify-between mb-3 px-1">
           <h2 className="text-[18px] font-bold">Diary</h2>
         </div>
         <div className="space-y-2.5">
@@ -173,28 +202,35 @@ export function Nutrition({ onNav }: { onNav: (r: string) => void }) {
         </div>
       </div>
 
-      {/* insights */}
+      {/* insights — collapsed behind a tap */}
       {insights.length > 0 && (
         <div>
-          <h2 className="text-[18px] font-bold mb-2 px-1">Insights</h2>
-          <div className="space-y-2">
-            {insights.slice(0, 4).map((ins, i) => (
-              <Card key={i} className={cx('px-4 py-3 flex gap-3 items-start', ins.tone === 'good' && 'border-good/30', ins.tone === 'warn' && 'border-accent/30')}>
-                <span className="text-[18px] leading-none">{ins.icon}</span>
-                <span className="text-[13px] text-ink/90">{ins.text}</span>
-              </Card>
-            ))}
-          </div>
+          <button onClick={() => setInsightsOpen((o) => !o)}
+            className="w-full flex items-center gap-3 px-4 py-3 bg-surface border border-edge rounded-2xl text-left active:bg-surface2">
+            <span className="text-[18px] leading-none">{insightsOpen ? '💡' : insights[0].icon}</span>
+            <span className="grow min-w-0 text-[14px] font-medium truncate">
+              {insightsOpen ? 'Insights' : insights[0].text}
+            </span>
+            <span className="shrink-0 flex items-center gap-1.5 text-mut">
+              {!insightsOpen && insights.length > 1 && <span className="text-[12px]">+{insights.length - 1}</span>}
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2"
+                className={cx('transition-transform', insightsOpen && 'rotate-180')}>
+                <path d="M6 9l6 6 6-6" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </span>
+          </button>
+          {insightsOpen && (
+            <div className="space-y-2 mt-2">
+              {insights.slice(0, 4).map((ins, i) => (
+                <Card key={i} className={cx('px-4 py-3 flex gap-3 items-start', ins.tone === 'good' && 'border-good/30', ins.tone === 'warn' && 'border-accent/30')}>
+                  <span className="text-[18px] leading-none">{ins.icon}</span>
+                  <span className="text-[13px] text-ink/90">{ins.text}</span>
+                </Card>
+              ))}
+            </div>
+          )}
         </div>
       )}
-
-      {/* actions */}
-      <div className="grid grid-cols-2 gap-2 pt-1">
-        <Button kind="ghost" onClick={dupYesterday}>⧉ Copy yesterday</Button>
-        <Button kind="ghost" onClick={() => setView('meals')}>🍽 Meals</Button>
-        <Button kind="ghost" onClick={() => setGoalOpen(true)}>🎯 Goals</Button>
-        <Button kind="ghost" onClick={() => onNav('reports')}>📊 Reports</Button>
-      </div>
 
       {addTo && <LogFoodSheet open onClose={() => setAddTo(null)} date={date} mealType={addTo} onChanged={load} />}
       <EntryEditSheet entry={editEntry} onClose={() => setEditEntry(null)} onChanged={load} />
