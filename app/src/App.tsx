@@ -1,0 +1,163 @@
+import React, { useEffect, useState } from 'react';
+import { api, Settings } from './api';
+import { setUnits, cx } from './util';
+import { Home } from './screens/Home';
+import { History, WorkoutDetail } from './screens/History';
+import { Routines } from './screens/Routines';
+import { Library, ExerciseDetail } from './screens/Library';
+import { Progress } from './screens/Progress';
+import { Reports } from './screens/Reports';
+import { Garmin } from './screens/Garmin';
+import { SettingsScreen } from './screens/Settings';
+import { WorkoutScreen } from './screens/Workout';
+import { RestTimerBar } from './components/RestTimer';
+import { Spinner } from './components/ui';
+
+function useHashRoute(): [string, (r: string) => void] {
+  const [route, setRoute] = useState(location.hash.slice(2) || '');
+  useEffect(() => {
+    const h = () => setRoute(location.hash.slice(2) || '');
+    window.addEventListener('hashchange', h);
+    return () => window.removeEventListener('hashchange', h);
+  }, []);
+  return [route, (r: string) => { location.hash = '#/' + r; }];
+}
+
+const TABS = [
+  { key: '', label: 'Home', icon: '⌂' },
+  { key: 'history', label: 'History', icon: '☰' },
+  { key: 'routines', label: 'Routines', icon: '▦' },
+  { key: 'progress', label: 'Progress', icon: '↗' },
+  { key: 'more', label: 'More', icon: '•••' },
+];
+
+const TITLES: Record<string, string> = {
+  '': 'Ironlog', history: 'History', routines: 'Routines', progress: 'Progress',
+  library: 'Exercises', reports: 'Reports', garmin: 'Garmin', settings: 'Settings', more: 'More',
+};
+
+export default function App() {
+  const [route, nav] = useHashRoute();
+  const [boot, setBoot] = useState<{ settings: Settings; muscles: string[]; equipment: string[] } | null>(null);
+  const [activeId, setActiveId] = useState<number | null>(null);
+  const [showWorkout, setShowWorkout] = useState(false);
+
+  useEffect(() => {
+    api.bootstrap().then((b) => {
+      setUnits(b.settings.units);
+      setBoot(b);
+      if (b.active_workout) setActiveId(b.active_workout.id);
+    });
+  }, []);
+
+  if (!boot) return <div className="min-h-dvh flex items-center justify-center"><Spinner /></div>;
+
+  const { muscles, equipment } = boot;
+  const seg = route.split('/');
+  const base = seg[0];
+
+  // Never silently orphan an in-progress workout: resume it instead of stacking a new one.
+  function guardActive(): boolean {
+    if (!activeId) return true;
+    setShowWorkout(true);
+    return false;
+  }
+  async function startTemplate(id: number) {
+    if (!guardActive()) return;
+    const w = await api.templates.start(id);
+    setActiveId(w.id); setShowWorkout(true);
+  }
+  async function startBlank() {
+    if (!guardActive()) return;
+    const w = await api.workouts.create();
+    setActiveId(w.id); setShowWorkout(true);
+  }
+  function workoutDone() {
+    setActiveId(null); setShowWorkout(false);
+    nav(''); // refresh home
+  }
+
+  const title = TITLES[base] ?? 'Ironlog';
+
+  return (
+    <div className="min-h-dvh max-w-lg mx-auto pb-[calc(env(safe-area-inset-bottom)+84px)]">
+      {/* header */}
+      <header className="sticky top-0 z-30 bg-bg/85 backdrop-blur border-b border-edge/60 px-4 pt-[calc(env(safe-area-inset-top)+14px)] pb-3 flex items-center justify-between">
+        <h1 className="text-[21px] font-bold tracking-tight">
+          {base === '' ? <><span className="text-accent">Iron</span>log</> : title}
+        </h1>
+        {base === '' && (
+          <button onClick={() => nav('settings')} className="w-9 h-9 rounded-full bg-surface border border-edge text-mut flex items-center justify-center">⚙</button>
+        )}
+      </header>
+
+      {/* routes */}
+      {base === '' && <Home onStartTemplate={startTemplate} onStartBlank={startBlank} activeId={activeId} onResume={() => setShowWorkout(true)} onNav={nav} />}
+      {base === 'history' && !seg[1] && <History onNav={nav} onDuplicated={() => { api.workouts.active().then((w) => { if (w) { setActiveId(w.id); setShowWorkout(true); } }); }} />}
+      {base === 'history' && seg[1] && <WorkoutDetail id={Number(seg[1])} onNav={nav}
+        onDuplicated={() => { api.workouts.active().then((w) => { if (w) { setActiveId(w.id); setShowWorkout(true); } }); }} />}
+      {base === 'routines' && <Routines muscles={muscles} equipment={equipment} onStart={startTemplate} />}
+      {base === 'library' && !seg[1] && <Library muscles={muscles} equipment={equipment} onNav={nav} />}
+      {base === 'library' && seg[1] && <ExerciseDetail id={Number(seg[1])} onNav={nav} muscles={muscles} equipment={equipment} />}
+      {base === 'progress' && <Progress onNav={nav} />}
+      {base === 'reports' && <Reports onNav={nav} />}
+      {base === 'garmin' && <Garmin />}
+      {base === 'settings' && <SettingsScreen settings={boot.settings} onChange={(s) => setBoot({ ...boot, settings: s })} />}
+      {base === 'more' && <More onNav={nav} />}
+
+      {/* resume pill */}
+      {activeId && !showWorkout && (
+        <button onClick={() => setShowWorkout(true)}
+          className="fixed left-4 right-4 bottom-[calc(env(safe-area-inset-bottom)+76px)] z-40 max-w-lg mx-auto bg-accent text-black font-semibold rounded-2xl py-3 text-[14px] shadow-xl shadow-black/50 animate-slideup">
+          ● Workout in progress — tap to resume
+        </button>
+      )}
+
+      {/* tab bar */}
+      <nav className="fixed bottom-0 left-0 right-0 z-30 bg-bg/90 backdrop-blur border-t border-edge">
+        <div className="max-w-lg mx-auto flex pb-[env(safe-area-inset-bottom)]">
+          {TABS.map((t) => {
+            const active = base === t.key || (t.key === 'more' && ['library', 'garmin', 'reports', 'settings'].includes(base));
+            return (
+              <button key={t.key} onClick={() => nav(t.key)}
+                className={cx('flex-1 pt-2.5 pb-2 flex flex-col items-center gap-0.5 transition-colors', active ? 'text-accent' : 'text-dim')}>
+                <span className="text-[19px] leading-none">{t.icon}</span>
+                <span className="text-[10px] font-medium">{t.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      </nav>
+
+      {/* active workout overlay */}
+      {showWorkout && activeId && (
+        <WorkoutScreen workoutId={activeId} onDone={workoutDone} muscles={muscles} equipment={equipment} />
+      )}
+      <RestTimerBar />
+    </div>
+  );
+}
+
+function More({ onNav }: { onNav: (r: string) => void }) {
+  const items = [
+    { key: 'library', icon: '🏋️', label: 'Exercise library', sub: 'Browse, search, and add custom exercises' },
+    { key: 'reports', icon: '📊', label: 'Weekly & monthly reports', sub: 'Volume, PRs, muscle balance, recovery' },
+    { key: 'garmin', icon: '⌚', label: 'Garmin', sub: 'Import activities and wellness data' },
+    { key: 'settings', icon: '⚙️', label: 'Settings', sub: 'Units, rest timer, weekly goal, data' },
+  ];
+  return (
+    <div className="px-4 pt-2 space-y-2">
+      {items.map((i) => (
+        <button key={i.key} onClick={() => onNav(i.key)}
+          className="w-full bg-surface border border-edge rounded-2xl px-4 py-3.5 flex items-center gap-3.5 text-left active:bg-surface2">
+          <span className="text-2xl">{i.icon}</span>
+          <span className="grow">
+            <span className="block text-[15px] font-semibold">{i.label}</span>
+            <span className="block text-[12px] text-mut">{i.sub}</span>
+          </span>
+          <span className="text-dim">›</span>
+        </button>
+      ))}
+    </div>
+  );
+}

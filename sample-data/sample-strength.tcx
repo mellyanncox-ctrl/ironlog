@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<TrainingCenterDatabase xmlns="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2">
+  <Activities>
+    <Activity Sport="Other">
+      <Id>2026-07-04T09:02:11.000Z</Id>
+      <Lap StartTime="2026-07-04T09:02:11.000Z">
+        <TotalTimeSeconds>3541.0</TotalTimeSeconds>
+        <DistanceMeters>0.0</DistanceMeters>
+        <Calories>318</Calories>
+        <AverageHeartRateBpm><Value>111</Value></AverageHeartRateBpm>
+        <MaximumHeartRateBpm><Value>156</Value></MaximumHeartRateBpm>
+        <Intensity>Active</Intensity>
+        <TriggerMethod>Manual</TriggerMethod>
+      </Lap>
+    </Activity>
+  </Activities>
+</TrainingCenterDatabase>
