@@ -1,5 +1,7 @@
 // Schema + built-in exercise library + settings. Ported from the Node server.
 import { getDb } from './sqlite';
+import { FOOD_SEED } from './foods-seed';
+import { localISO } from './dates';
 
 export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS exercises (
@@ -104,10 +106,95 @@ CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+-- ── Nutrition module (additive; extends the training engine) ─────────────────
+-- A food stores nutrition PER ONE SERVING. Diary entries and recipe items keep
+-- a snapshot of that nutrition, so editing/deleting a food never rewrites logged
+-- history — the same "logged data is a snapshot" rule the workout tables follow.
+CREATE TABLE IF NOT EXISTS foods (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  brand TEXT NOT NULL DEFAULT '',
+  serving_desc TEXT NOT NULL DEFAULT 'serving',  -- e.g. "100 g", "1 medium (118 g)"
+  serving_grams REAL,                            -- grams in one serving (nullable)
+  kcal REAL NOT NULL DEFAULT 0,                  -- per one serving
+  protein REAL NOT NULL DEFAULT 0,
+  carbs REAL NOT NULL DEFAULT 0,
+  fat REAL NOT NULL DEFAULT 0,
+  fibre REAL, sugar REAL, sodium REAL,           -- fibre/sugar in g, sodium in mg
+  barcode TEXT,                                  -- EAN/UPC — enables offline re-scan
+  is_custom INTEGER NOT NULL DEFAULT 0,
+  favourite INTEGER NOT NULL DEFAULT 0,
+  archived INTEGER NOT NULL DEFAULT 0,
+  source TEXT NOT NULL DEFAULT 'seed',
+  created_at TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS meals (               -- saved meals + recipes
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  note TEXT NOT NULL DEFAULT '',
+  servings REAL NOT NULL DEFAULT 1,              -- recipe yield (total makes N servings)
+  archived INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS meal_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  meal_id INTEGER NOT NULL REFERENCES meals(id) ON DELETE CASCADE,
+  food_id INTEGER REFERENCES foods(id) ON DELETE SET NULL,
+  position INTEGER NOT NULL DEFAULT 0,
+  quantity REAL NOT NULL DEFAULT 1,              -- servings of the food
+  name TEXT NOT NULL DEFAULT '',                 -- snapshot (per one serving of the food)
+  kcal REAL NOT NULL DEFAULT 0, protein REAL NOT NULL DEFAULT 0,
+  carbs REAL NOT NULL DEFAULT 0, fat REAL NOT NULL DEFAULT 0,
+  fibre REAL, sugar REAL, sodium REAL
+);
+CREATE TABLE IF NOT EXISTS nutrition_entries (   -- the food diary
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  date TEXT NOT NULL,                            -- YYYY-MM-DD (local)
+  meal_type TEXT NOT NULL DEFAULT 'breakfast',   -- breakfast|lunch|dinner|snacks
+  position INTEGER NOT NULL DEFAULT 0,
+  food_id INTEGER REFERENCES foods(id) ON DELETE SET NULL,
+  quantity REAL NOT NULL DEFAULT 1,              -- number of servings logged
+  name TEXT NOT NULL DEFAULT 'Food',             -- snapshot per one serving ↓
+  brand TEXT NOT NULL DEFAULT '',
+  serving_desc TEXT NOT NULL DEFAULT '',
+  kcal REAL NOT NULL DEFAULT 0, protein REAL NOT NULL DEFAULT 0,
+  carbs REAL NOT NULL DEFAULT 0, fat REAL NOT NULL DEFAULT 0,
+  fibre REAL, sugar REAL, sodium REAL,
+  logged_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS nutrition_goals (     -- single active row (id = 1)
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  goal_type TEXT NOT NULL DEFAULT 'maintain',    -- lose|maintain|gain|performance
+  sex TEXT, age INTEGER, height_cm REAL, activity TEXT,  -- BMR/TDEE inputs
+  target_weight REAL,
+  calories REAL, protein REAL, carbs REAL, fat REAL,     -- effective targets
+  auto INTEGER NOT NULL DEFAULT 1,               -- 1 = keep macros synced to calculator
+  add_burned INTEGER NOT NULL DEFAULT 0,         -- eat-back toggle
+  updated_at TEXT
+);
+CREATE TABLE IF NOT EXISTS water_tracking (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  date TEXT NOT NULL UNIQUE,
+  ml REAL NOT NULL DEFAULT 0
+);
 CREATE INDEX IF NOT EXISTS idx_we_workout ON workout_exercises(workout_id);
 CREATE INDEX IF NOT EXISTS idx_sets_we ON sets(workout_exercise_id);
 CREATE INDEX IF NOT EXISTS idx_workouts_started ON workouts(started_at);
+CREATE INDEX IF NOT EXISTS idx_nutrition_date ON nutrition_entries(date);
+CREATE INDEX IF NOT EXISTS idx_meal_items_meal ON meal_items(meal_id);
+CREATE INDEX IF NOT EXISTS idx_foods_name ON foods(name);
+CREATE INDEX IF NOT EXISTS idx_foods_barcode ON foods(barcode);
 `;
+
+export const MEAL_TYPES = ['breakfast', 'lunch', 'dinner', 'snacks'] as const;
+export const ACTIVITY_LEVELS: [string, string, number][] = [
+  // key, label, TDEE multiplier
+  ['sedentary', 'Sedentary — desk job, little exercise', 1.2],
+  ['light', 'Light — 1–3 workouts/week', 1.375],
+  ['moderate', 'Moderate — 3–5 workouts/week', 1.55],
+  ['very', 'Very active — 6–7 workouts/week', 1.725],
+  ['athlete', 'Athlete — hard training / physical job', 1.9],
+];
 
 const SEED: [string, string, string, string][] = [
   ['Barbell Bench Press', 'chest', 'triceps,shoulders', 'barbell'],
@@ -211,10 +298,29 @@ export function migrate(): void {
   db.exec(SCHEMA);
   // additive migrations for databases created before these columns existed
   try { db.exec('ALTER TABLE garmin_activities ADD COLUMN distance_m INTEGER'); } catch { /* already there */ }
+  try { db.exec('ALTER TABLE foods ADD COLUMN barcode TEXT'); } catch { /* already there / table new */ }
   const n = db.prepare('SELECT COUNT(*) AS n FROM exercises').get()!.n as number;
   if (n === 0) {
     const ins = db.prepare('INSERT INTO exercises (name, muscle, secondary, equipment) VALUES (?, ?, ?, ?)');
     for (const [name, muscle, secondary, equipment] of SEED) ins.run(name, muscle, secondary, equipment);
+  }
+  seedFoods();
+}
+
+// Seed the built-in food library once. Idempotent: only runs when no seed foods
+// exist, so a user's custom foods and diary are never touched. Runs on every
+// migrate() (incl. after importing an older backup) so libraries stay populated.
+export function seedFoods(): void {
+  const db = getDb();
+  const have = db.prepare("SELECT COUNT(*) AS n FROM foods WHERE source = 'seed'").get()!.n as number;
+  if (have > 0) return;
+  const now = localISO();
+  const ins = db.prepare(`INSERT INTO foods
+    (name, brand, serving_desc, serving_grams, kcal, protein, carbs, fat, fibre, sugar, sodium, source, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'seed', ?)`);
+  for (const f of FOOD_SEED) {
+    ins.run(f.name, f.brand ?? '', f.serving, f.grams ?? null, f.kcal, f.protein, f.carbs, f.fat,
+      f.fibre ?? null, f.sugar ?? null, f.sodium ?? null, now);
   }
 }
 

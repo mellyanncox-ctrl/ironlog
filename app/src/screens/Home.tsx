@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { api, Overview, Template, GarminDaily, WorkoutSummary, GarminActivity, ProgressPhoto } from '../api';
+import { api, Overview, Template, GarminDaily, WorkoutSummary, GarminActivity, ProgressPhoto, DayView } from '../api';
 import { Card, Button, Stat, Pill } from '../components/ui';
-import { fmtVolume, fmtDate, todayDow, DOW, fmtDuration, fmtDistance, fmtPace, isoWeekStartLocal, todayISO } from '../util';
+import { MACRO } from '../components/nutrition';
+import { fmtVolume, fmtDate, todayDow, DOW, fmtDuration, fmtDistance, fmtPace, isoWeekStartLocal, todayISO, cx } from '../util';
 
 export function Home({ onStartTemplate, onStartBlank, onResume, activeId, onNav }: {
   onStartTemplate: (id: number) => void; onStartBlank: () => void;
@@ -13,6 +14,7 @@ export function Home({ onStartTemplate, onStartBlank, onResume, activeId, onNav 
   const [daily, setDaily] = useState<GarminDaily[]>([]);
   const [lastRun, setLastRun] = useState<GarminActivity | null>(null);
   const [photos, setPhotos] = useState<ProgressPhoto[]>([]);
+  const [nutri, setNutri] = useState<DayView | null>(null);
 
   useEffect(() => {
     api.stats.overview().then(setOv);
@@ -21,6 +23,7 @@ export function Home({ onStartTemplate, onStartBlank, onResume, activeId, onNav 
     api.garmin.daily().then(setDaily).catch(() => {});
     api.garmin.runs(1).then((r) => setLastRun(r[0] || null)).catch(() => {});
     api.photos.list().then(setPhotos).catch(() => {});
+    api.nutrition.diary.day(todayISO()).then(setNutri).catch(() => {});
   }, [activeId]);
 
   const today = todayDow();
@@ -39,6 +42,9 @@ export function Home({ onStartTemplate, onStartBlank, onResume, activeId, onNav 
         <Stat label="volume" value={ov ? fmtVolume(ov.volume_this_week) : '–'} sub="this week" />
         <Stat label="PRs" value={ov ? ov.prs_this_month : '–'} sub="this month" accent />
       </Card>
+
+      {/* nutrition — connects training + food on the home screen */}
+      {nutri && <NutritionCard day={nutri} onNav={onNav} />}
 
       {/* active workout */}
       {activeId && (
@@ -165,4 +171,55 @@ export function Home({ onStartTemplate, onStartBlank, onResume, activeId, onNav 
 
 function SectionTitle({ children }: { children: React.ReactNode }) {
   return <h2 className="text-[13px] font-semibold text-mut uppercase tracking-wide mb-2">{children}</h2>;
+}
+
+function NutritionCard({ day, onNav }: { day: DayView; onNav: (r: string) => void }) {
+  const logged = day.totals.kcal > 0 || day.meals.some((m) => m.entries.length > 0);
+  const tg = day.targets;
+  const hasGoal = !!(tg && tg.calories);
+
+  // Nothing yet: a calm nudge that ties food to training.
+  if (!logged && !hasGoal) {
+    return (
+      <Card className="px-4 py-3.5" onClick={() => onNav('food')}>
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="text-[14px] font-semibold">🍽 Track your nutrition</div>
+            <div className="text-[12px] text-mut">Log food and see it next to your training</div>
+          </div>
+          <span className="text-accent text-[14px] font-semibold">Start ›</span>
+        </div>
+      </Card>
+    );
+  }
+
+  const pct = hasGoal ? Math.min(1, day.totals.kcal / (day.budget || tg!.calories)) : 0;
+  const over = day.remaining != null && day.remaining < 0;
+  return (
+    <Card className="px-4 py-3.5" onClick={() => onNav('food')}>
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-[14px] font-semibold">🍽 Nutrition · Today</span>
+        <span className="text-[12px] text-accent font-semibold">Log ›</span>
+      </div>
+      <div className="flex items-baseline gap-2 mb-2 tabular-nums">
+        <span className="text-[22px] font-bold">{Math.round(day.totals.kcal).toLocaleString()}</span>
+        {hasGoal
+          ? <span className={cx('text-[13px]', over ? 'text-bad' : 'text-mut')}>/ {day.budget?.toLocaleString()} kcal · {Math.abs(day.remaining ?? 0)} {over ? 'over' : 'left'}</span>
+          : <span className="text-[13px] text-mut">kcal eaten</span>}
+      </div>
+      {hasGoal && (
+        <div className="h-1.5 rounded-full bg-surface2 overflow-hidden mb-2">
+          <div className="h-full rounded-full transition-all" style={{ width: `${Math.max(2, pct * 100)}%`, background: over ? '#ff453a' : '#ff9f0a' }} />
+        </div>
+      )}
+      {tg?.protein != null && (
+        <div className="flex items-center justify-between text-[12px]">
+          <span className="text-mut">Protein</span>
+          <span className="tabular-nums font-medium" style={{ color: day.totals.protein >= tg.protein * 0.9 ? MACRO.protein : undefined }}>
+            {Math.round(day.totals.protein)} / {Math.round(tg.protein)} g
+          </span>
+        </div>
+      )}
+    </Card>
+  );
 }

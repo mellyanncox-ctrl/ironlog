@@ -11,6 +11,7 @@
     "test": "node tests/run.mjs"
   },
   "dependencies": {
+    "@zxing/library": "^0.21.3",
     "fit-file-parser": "^1.21.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

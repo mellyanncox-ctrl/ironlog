@@ -136,7 +136,57 @@ export function seed() {
         const d = new Date(); d.setDate(d.getDate() - i);
         bw.run(localDate(d), Math.round((78.5 - i * 0.05 + (i % 4) * 0.1) * 10) / 10);
       }
+
+      seedNutrition(db);
     }
     return { templates: 3, workouts, note: workouts ? `Seeded PPL routine + ${workouts} workouts + bodyweight.` : 'Demo data already present — skipped.' };
+  });
+}
+
+// A maintenance nutrition goal + ~12 days of a realistic diary + one saved meal,
+// so the Food tab, reports, and insights are populated on "Load sample data".
+function seedNutrition(db: any) {
+  if ((db.prepare('SELECT COUNT(*) AS n FROM nutrition_entries').get()!.n as number) > 0) return;
+  db.prepare(`INSERT INTO nutrition_goals (id, goal_type, sex, age, height_cm, activity, target_weight, calories, protein, carbs, fat, auto, add_burned, updated_at)
+    VALUES (1, 'maintain', 'male', 30, 180, 'moderate', 77, 2300, 165, 230, 70, 1, 0, ?)
+    ON CONFLICT(id) DO NOTHING`).run(localISO());
+
+  const foodByName = (name: string) => db.prepare('SELECT * FROM foods WHERE name = ? LIMIT 1').get(name);
+  const log = (date: string, meal: string, name: string, qty: number, hour: number) => {
+    const f = foodByName(name);
+    if (!f) return;
+    const pos = db.prepare('SELECT COALESCE(MAX(position), -1) + 1 AS p FROM nutrition_entries WHERE date = ? AND meal_type = ?').get(date, meal)!.p as number;
+    const at = new Date(date + 'T00:00:00'); at.setHours(hour, 0, 0, 0);
+    db.prepare(`INSERT INTO nutrition_entries (date, meal_type, position, food_id, quantity, name, brand, serving_desc, kcal, protein, carbs, fat, fibre, sugar, sodium, logged_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(date, meal, pos, f.id, qty, f.name, f.brand, f.serving_desc, f.kcal, f.protein, f.carbs, f.fat, f.fibre, f.sugar, f.sodium, localISO(at));
+  };
+
+  for (let i = 11; i >= 0; i--) {
+    const d = new Date(); d.setDate(d.getDate() - i);
+    const date = localDate(d);
+    const weekend = d.getDay() === 0 || d.getDay() === 6;
+    log(date, 'breakfast', 'Porridge Oats, dry', 1, 7);
+    log(date, 'breakfast', 'Semi-Skimmed Milk', 1, 7);
+    log(date, 'breakfast', 'Banana', 1, 7);
+    log(date, 'breakfast', 'Whey Protein Powder', 1, 7);
+    log(date, 'lunch', 'Chicken Breast, grilled', 2, 13);
+    log(date, 'lunch', 'White Rice, cooked', 2, 13);
+    log(date, 'lunch', 'Broccoli, steamed', 1, 13);
+    log(date, 'dinner', 'Salmon Fillet, cooked', 1.5, 19);
+    log(date, 'dinner', 'Sweet Potato, baked', 2, 19);
+    log(date, 'dinner', 'Mixed Salad', 1, 19);
+    log(date, 'snacks', 'Greek Yogurt, 0% fat', 1, 16);
+    log(date, 'snacks', 'Almonds', 1, 16);
+    if (weekend) { log(date, 'snacks', 'Milk Chocolate', 2, 21); log(date, 'dinner', 'Beer, lager', 2, 20); }
+  }
+
+  // one saved meal (recipe) — the classic breakfast smoothie
+  const mid = db.prepare("INSERT INTO meals (name, note, servings, created_at) VALUES ('Breakfast smoothie', 'Post-workout go-to', 1, ?)").run(localISO()).lastInsertRowid as number;
+  const items: [string, number][] = [['Banana', 1], ['Whey Protein Powder', 1], ['Semi-Skimmed Milk', 1.5], ['Peanut Butter', 1]];
+  items.forEach(([name, qty], i) => {
+    const f = foodByName(name); if (!f) return;
+    db.prepare(`INSERT INTO meal_items (meal_id, food_id, position, quantity, name, kcal, protein, carbs, fat, fibre, sugar, sodium)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(mid, f.id, i, qty, f.name, f.kcal, f.protein, f.carbs, f.fat, f.fibre, f.sugar, f.sodium);
   });
 }

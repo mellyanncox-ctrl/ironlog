@@ -2,13 +2,15 @@
 // Same surface as the old HTTP client, so screens are unchanged.
 import { initDb, getDb, withTx, exportBytes, importBytes, flush, type Storage } from './db/sqlite';
 import { IdbPhotoStore, MemoryPhotoStore, newPhotoKey, type PhotoStore } from './db/photos';
-import { migrate, getSetting, setSetting, allSettings, MUSCLES, EQUIPMENT } from './db/schema';
+import { migrate, getSetting, setSetting, allSettings, MUSCLES, EQUIPMENT, MEAL_TYPES } from './db/schema';
 import * as stats from './db/stats';
+import * as nutri from './db/nutrition';
 import * as reportsMod from './db/reports';
 import { suggestions as suggestionsFn } from './db/suggestions';
 import * as garminMod from './db/garmin';
 import { fetchSyncSnapshot, REPO_RE, type SyncOutcome } from './lib/remoteSync';
 import { matchStrongExercise, type StrongWorkout } from './lib/strongParse';
+import { fetchOpenFoodFacts, normalizeBarcode, type FoodDraft } from './lib/openfoodfacts';
 import { seed as seedDemo } from './db/seed-demo';
 import { localISO, localDate } from './db/dates';
 
@@ -85,6 +87,51 @@ export type Suggestions = {
   deload: { regressing_lifts: number; hint: string } | null;
   next_weights: { exercise_id: number; name: string; last: number; suggested: number; reason: string }[];
 };
+// ---------- nutrition types ----------
+export type Food = {
+  id: number; name: string; brand: string; serving_desc: string; serving_grams: number | null;
+  kcal: number; protein: number; carbs: number; fat: number;
+  fibre: number | null; sugar: number | null; sodium: number | null; barcode: string | null;
+  is_custom: number; favourite: number; archived: number; source: string; created_at: string;
+};
+export type BarcodeLookup =
+  | { source: 'local'; food: Food }
+  | { source: 'off'; draft: FoodDraft }
+  | { source: 'notfound' | 'offline' | 'error'; message?: string };
+export type MealType = 'breakfast' | 'lunch' | 'dinner' | 'snacks';
+export type DiaryEntry = {
+  id: number; date: string; meal_type: MealType; position: number; food_id: number | null; quantity: number;
+  name: string; brand: string; serving_desc: string;
+  kcal: number; protein: number; carbs: number; fat: number;
+  fibre: number | null; sugar: number | null; sodium: number | null; logged_at: string;
+};
+export type MealItem = {
+  id: number; meal_id: number; food_id: number | null; position: number; quantity: number;
+  name: string; kcal: number; protein: number; carbs: number; fat: number;
+  fibre: number | null; sugar: number | null; sodium: number | null;
+};
+export type Meal = {
+  id: number; name: string; note: string; servings: number; created_at: string;
+  items: MealItem[]; per_serving: nutri.Macros; total: nutri.Macros;
+};
+export type NutritionGoal = {
+  goal_type: 'lose' | 'maintain' | 'gain' | 'performance';
+  sex: 'male' | 'female' | null; age: number | null; height_cm: number | null; activity: string | null;
+  target_weight: number | null;
+  calories: number | null; protein: number | null; carbs: number | null; fat: number | null;
+  auto: number; add_burned: number;
+};
+export type DayView = {
+  date: string;
+  meals: { meal_type: MealType; entries: DiaryEntry[]; totals: nutri.Macros }[];
+  totals: nutri.Macros;
+  goal: NutritionGoal | null;
+  targets: nutri.Targets | null;
+  burned: number; add_burned: boolean; budget: number | null; remaining: number | null;
+  weight: number | null; water_ml: number;
+  workouts: { id: number; name: string }[]; streak: number;
+};
+export type NutritionInsight = nutri.Insight;
 export type ExerciseStats = {
   trend: { day: string; e1rm: number }[];
   volume: { bucket: string; volume: number; sets: number }[];
@@ -189,6 +236,83 @@ function replaceTemplateExercises(templateId: number, list: any[]) {
     numOrNull(te.rest_seconds, 5, 3600) ?? Number(getSetting('default_rest', '120')),
     String(te.notes || '').slice(0, 500)
   ));
+}
+
+// Snapshot each recipe item's per-serving nutrition from its source food (or
+// from inline values for ad-hoc items), so a later edit/delete of a food can't
+// silently change a saved recipe.
+function replaceMealItems(mealId: number, list: any[]) {
+  const db = getDb();
+  db.prepare('DELETE FROM meal_items WHERE meal_id = ?').run(mealId);
+  const ins = db.prepare(`INSERT INTO meal_items (meal_id, food_id, position, quantity, name, kcal, protein, carbs, fat, fibre, sugar, sodium)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  list.forEach((it, i) => {
+    let snap: any, food_id: number | null = null;
+    if (it.food_id) {
+      const f = getFood(Number(it.food_id));
+      food_id = f.id;
+      snap = { name: f.name, kcal: f.kcal, protein: f.protein, carbs: f.carbs, fat: f.fat, fibre: f.fibre, sugar: f.sugar, sodium: f.sodium };
+    } else {
+      const f = foodInput(it);
+      snap = { name: f.name, kcal: f.kcal, protein: f.protein, carbs: f.carbs, fat: f.fat, fibre: f.fibre, sugar: f.sugar, sodium: f.sodium };
+    }
+    ins.run(mealId, food_id, i, nn(it.quantity ?? 1, 0.01, 100, 1), snap.name, snap.kcal, snap.protein, snap.carbs, snap.fat, snap.fibre, snap.sugar, snap.sodium);
+  });
+}
+
+// ---------- nutrition internals ----------
+const MT = new Set(MEAL_TYPES as readonly string[]);
+function mealType(v: any, fallback = 'breakfast'): MealType {
+  return (MT.has(v) ? v : fallback) as MealType;
+}
+function nn(v: any, min: number, max: number, def = 0): number {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return def;
+  return Math.min(max, Math.max(min, n));
+}
+function nnOrNull(v: any, min: number, max: number): number | null {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  if (!Number.isFinite(n)) return null;
+  return Math.min(max, Math.max(min, n));
+}
+function reqDate(v: any): string {
+  const s = String(v ?? '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) throw new UserError('Enter a valid date');
+  return s;
+}
+// Normalize any food-shaped input into stored per-serving nutrition.
+function foodInput(e: any) {
+  return {
+    name: reqName(e.name, 'Food'),
+    brand: String(e.brand || '').slice(0, 80),
+    serving_desc: String(e.serving_desc || 'serving').trim().slice(0, 60) || 'serving',
+    serving_grams: nnOrNull(e.serving_grams, 0, 5000),
+    kcal: nn(e.kcal, 0, 10000),
+    protein: nn(e.protein, 0, 1000),
+    carbs: nn(e.carbs, 0, 1000),
+    fat: nn(e.fat, 0, 1000),
+    fibre: nnOrNull(e.fibre, 0, 1000),
+    sugar: nnOrNull(e.sugar, 0, 1000),
+    sodium: nnOrNull(e.sodium, 0, 100000),
+    barcode: e.barcode !== undefined ? normalizeBarcode(e.barcode) : undefined,
+  };
+}
+function getFood(id: number): Food {
+  const f = getDb().prepare('SELECT * FROM foods WHERE id = ?').get(id) as Food | undefined;
+  if (!f) throw new UserError('Food not found');
+  return f;
+}
+function fullMeal(id: number): Meal | null {
+  const db = getDb();
+  const m = db.prepare('SELECT * FROM meals WHERE id = ?').get(id) as any;
+  if (!m) return null;
+  const items = db.prepare('SELECT * FROM meal_items WHERE meal_id = ? ORDER BY position, id').all(id) as MealItem[];
+  let total = { kcal: 0, protein: 0, carbs: 0, fat: 0, fibre: 0, sugar: 0, sodium: 0 };
+  for (const it of items) total = nutri.addMacros(total, nutri.scale(it, it.quantity));
+  const servings = m.servings || 1;
+  const per = { kcal: total.kcal / servings, protein: total.protein / servings, carbs: total.carbs / servings, fat: total.fat / servings, fibre: total.fibre / servings, sugar: total.sugar / servings, sodium: total.sodium / servings };
+  return { ...m, items, total: nutri.roundMacros(total), per_serving: nutri.roundMacros(per) };
 }
 
 // ---------- api ----------
@@ -485,8 +609,16 @@ export const api = {
   },
 
   reports: {
-    weekly: async (date?: string) => { await ok(); return reportsMod.weeklyReport(date); },
-    monthly: async (month?: string) => { await ok(); return reportsMod.monthlyReport(month); },
+    weekly: async (date?: string) => {
+      await ok();
+      const r = reportsMod.weeklyReport(date);
+      return { ...r, nutrition: nutri.nutritionPeriod(r.start, r.end) };
+    },
+    monthly: async (month?: string) => {
+      await ok();
+      const r = reportsMod.monthlyReport(month);
+      return { ...r, nutrition: nutri.nutritionPeriod(r.start, r.end) };
+    },
   },
 
   suggestions: async (): Promise<Suggestions> => { await ok(); return suggestionsFn(); },
@@ -597,6 +729,335 @@ export const api = {
       await ok();
       const row = getDb().prepare('SELECT weight FROM body_weight WHERE date <= ? ORDER BY date DESC LIMIT 1').get(date);
       return row ? (row.weight as number) : null;
+    },
+  },
+
+  // ---------- Nutrition module ----------
+  nutrition: {
+    foods: {
+      search: async (q: string, limit = 40): Promise<Food[]> => {
+        await ok();
+        const term = String(q || '').trim();
+        if (!term) {
+          // no query → favourites first, then recently used, then alphabetical
+          return getDb().prepare('SELECT * FROM foods WHERE archived = 0 ORDER BY favourite DESC, name LIMIT ?').all(limit) as Food[];
+        }
+        const like = `%${term.replace(/[%_]/g, '')}%`;
+        const starts = `${term.replace(/[%_]/g, '')}%`;
+        return getDb().prepare(`
+          SELECT * FROM foods WHERE archived = 0 AND (name LIKE ? OR brand LIKE ?)
+          ORDER BY favourite DESC, (name LIKE ?) DESC, is_custom DESC, name LIMIT ?
+        `).all(like, like, starts, limit) as Food[];
+      },
+      recent: async (limit = 25): Promise<Food[]> => { await ok(); return nutri.recentFoods(limit) as Food[]; },
+      favourites: async (): Promise<Food[]> => { await ok(); return getDb().prepare('SELECT * FROM foods WHERE archived = 0 AND favourite = 1 ORDER BY name').all() as Food[]; },
+      custom: async (): Promise<Food[]> => { await ok(); return getDb().prepare('SELECT * FROM foods WHERE archived = 0 AND is_custom = 1 ORDER BY created_at DESC, name').all() as Food[]; },
+      get: async (id: number): Promise<Food> => { await ok(); return getFood(Number(id)); },
+      create: async (e: any): Promise<Food> => {
+        await ok();
+        const f = foodInput(e);
+        const id = getDb().prepare(`INSERT INTO foods (name, brand, serving_desc, serving_grams, kcal, protein, carbs, fat, fibre, sugar, sodium, barcode, is_custom, favourite, source, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`)
+          .run(f.name, f.brand, f.serving_desc, f.serving_grams, f.kcal, f.protein, f.carbs, f.fat, f.fibre, f.sugar, f.sodium, f.barcode ?? null, e.favourite ? 1 : 0, e.barcode ? 'barcode' : 'custom', localISO()).lastInsertRowid;
+        await flush();
+        return getFood(id as number);
+      },
+      update: async (id: number, e: any): Promise<Food> => {
+        await ok();
+        const f = foodInput(e);
+        // only touch barcode when the caller supplied one, so edits don't wipe it
+        if (f.barcode !== undefined) {
+          getDb().prepare(`UPDATE foods SET name=?, brand=?, serving_desc=?, serving_grams=?, kcal=?, protein=?, carbs=?, fat=?, fibre=?, sugar=?, sodium=?, barcode=? WHERE id=?`)
+            .run(f.name, f.brand, f.serving_desc, f.serving_grams, f.kcal, f.protein, f.carbs, f.fat, f.fibre, f.sugar, f.sodium, f.barcode ?? null, id);
+        } else {
+          getDb().prepare(`UPDATE foods SET name=?, brand=?, serving_desc=?, serving_grams=?, kcal=?, protein=?, carbs=?, fat=?, fibre=?, sugar=?, sodium=? WHERE id=?`)
+            .run(f.name, f.brand, f.serving_desc, f.serving_grams, f.kcal, f.protein, f.carbs, f.fat, f.fibre, f.sugar, f.sodium, id);
+        }
+        await flush();
+        return getFood(Number(id));
+      },
+      // Local barcode hit — works fully offline once a product has been saved.
+      byBarcode: async (code: string): Promise<Food | null> => {
+        await ok();
+        const c = normalizeBarcode(code);
+        if (!c) return null;
+        return (getDb().prepare('SELECT * FROM foods WHERE barcode = ? AND archived = 0 ORDER BY is_custom DESC, id DESC LIMIT 1').get(c) as Food) || null;
+      },
+      // Scan resolver: local first (offline), then Open Food Facts. Never throws
+      // on network trouble — returns a tagged outcome the UI can act on.
+      lookupBarcode: async (code: string, fetchFn?: typeof fetch): Promise<BarcodeLookup> => {
+        await ok();
+        const c = normalizeBarcode(code);
+        if (!c) return { source: 'notfound', message: 'That barcode doesn’t look valid' };
+        const local = (getDb().prepare('SELECT * FROM foods WHERE barcode = ? AND archived = 0 ORDER BY is_custom DESC, id DESC LIMIT 1').get(c) as Food) || null;
+        if (local) return { source: 'local', food: local };
+        if (typeof navigator !== 'undefined' && navigator.onLine === false) return { source: 'offline' };
+        try {
+          const draft = await fetchOpenFoodFacts(c, fetchFn ?? fetch);
+          return draft ? { source: 'off', draft } : { source: 'notfound' };
+        } catch (e: any) {
+          return { source: 'error', message: e?.message || 'Lookup failed' };
+        }
+      },
+      remove: async (id: number) => {
+        await ok();
+        const db = getDb();
+        const used = (db.prepare('SELECT COUNT(*) AS n FROM nutrition_entries WHERE food_id = ?').get(id)!.n as number)
+          + (db.prepare('SELECT COUNT(*) AS n FROM meal_items WHERE food_id = ?').get(id)!.n as number);
+        if (used > 0) { db.prepare('UPDATE foods SET archived = 1, favourite = 0 WHERE id = ?').run(id); await flush(); return { archived: true }; }
+        db.prepare('DELETE FROM foods WHERE id = ?').run(id);
+        await flush();
+        return { deleted: true };
+      },
+      toggleFavourite: async (id: number): Promise<Food> => {
+        await ok();
+        getDb().prepare('UPDATE foods SET favourite = 1 - favourite WHERE id = ?').run(id);
+        await flush();
+        return getFood(Number(id));
+      },
+    },
+
+    diary: {
+      day: async (date: string): Promise<DayView> => {
+        await ok();
+        const d = reqDate(date);
+        const db = getDb();
+        const rows = nutri.dayEntries(d) as DiaryEntry[];
+        const meals = (MEAL_TYPES as readonly MealType[]).map((mt) => {
+          const entries = rows.filter((r) => r.meal_type === mt);
+          let totals = { kcal: 0, protein: 0, carbs: 0, fat: 0, fibre: 0, sugar: 0, sodium: 0 };
+          for (const e of entries) totals = nutri.addMacros(totals, nutri.scale(e, e.quantity));
+          return { meal_type: mt, entries, totals: nutri.roundMacros(totals) };
+        });
+        const totalsRaw = nutri.dayTotals(d);
+        const goal = api.nutrition.goals._read();
+        const targets = goal ? { calories: goal.calories || 0, protein: goal.protein || 0, carbs: goal.carbs || 0, fat: goal.fat || 0 } : null;
+        const burned = nutri.burnedOn(d);
+        const add_burned = !!(goal && goal.add_burned);
+        const budget = targets && targets.calories ? targets.calories + (add_burned ? burned : 0) : null;
+        const remaining = budget != null ? Math.round(budget - totalsRaw.kcal) : null;
+        const workouts = db.prepare("SELECT id, name FROM workouts WHERE ended_at IS NOT NULL AND substr(started_at,1,10) = ? ORDER BY started_at").all(d) as { id: number; name: string }[];
+        const water = db.prepare('SELECT ml FROM water_tracking WHERE date = ?').get(d) as { ml: number } | undefined;
+        return {
+          date: d, meals, totals: nutri.roundMacros(totalsRaw), goal, targets,
+          burned, add_burned, budget: budget != null ? Math.round(budget) : null, remaining,
+          weight: nutri.weightOn(d), water_ml: water?.ml || 0, workouts, streak: nutri.loggingStreak(),
+        };
+      },
+      add: async (body: any): Promise<DiaryEntry> => {
+        await ok();
+        const date = reqDate(body.date);
+        const mt = mealType(body.meal_type);
+        const db = getDb();
+        const pos = db.prepare('SELECT COALESCE(MAX(position), -1) + 1 AS p FROM nutrition_entries WHERE date = ? AND meal_type = ?').get(date, mt)!.p as number;
+        let snap: any, food_id: number | null, quantity: number;
+        if (body.food_id) {
+          const f = getFood(Number(body.food_id));
+          food_id = f.id; quantity = nn(body.quantity ?? 1, 0.01, 100, 1);
+          snap = { name: f.name, brand: f.brand, serving_desc: f.serving_desc, kcal: f.kcal, protein: f.protein, carbs: f.carbs, fat: f.fat, fibre: f.fibre, sugar: f.sugar, sodium: f.sodium };
+        } else {
+          // quick add — free-form nutrition, no food record
+          food_id = null; quantity = 1;
+          const f = foodInput({ ...body, name: body.name || 'Quick add', serving_desc: body.serving_desc || 'entry' });
+          snap = { name: f.name, brand: f.brand, serving_desc: f.serving_desc, kcal: f.kcal, protein: f.protein, carbs: f.carbs, fat: f.fat, fibre: f.fibre, sugar: f.sugar, sodium: f.sodium };
+        }
+        const id = db.prepare(`INSERT INTO nutrition_entries (date, meal_type, position, food_id, quantity, name, brand, serving_desc, kcal, protein, carbs, fat, fibre, sugar, sodium, logged_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+          .run(date, mt, pos, food_id, quantity, snap.name, snap.brand, snap.serving_desc, snap.kcal, snap.protein, snap.carbs, snap.fat, snap.fibre, snap.sugar, snap.sodium, localISO()).lastInsertRowid;
+        await flush();
+        return db.prepare('SELECT * FROM nutrition_entries WHERE id = ?').get(id) as DiaryEntry;
+      },
+      update: async (id: number, body: any): Promise<DiaryEntry> => {
+        await ok();
+        const db = getDb();
+        const cur = db.prepare('SELECT * FROM nutrition_entries WHERE id = ?').get(id) as DiaryEntry | undefined;
+        if (!cur) throw new UserError('Diary entry not found');
+        const quantity = body.quantity !== undefined ? nn(body.quantity, 0.01, 100, cur.quantity) : cur.quantity;
+        const mt = body.meal_type !== undefined ? mealType(body.meal_type, cur.meal_type) : cur.meal_type;
+        // editable nutrition only for quick-add / detached entries (keeps food-linked snapshots faithful)
+        const editNutrition = cur.food_id == null && (body.kcal !== undefined || body.name !== undefined);
+        if (editNutrition) {
+          const f = foodInput({ name: body.name ?? cur.name, brand: body.brand ?? cur.brand, serving_desc: body.serving_desc ?? cur.serving_desc, kcal: body.kcal ?? cur.kcal, protein: body.protein ?? cur.protein, carbs: body.carbs ?? cur.carbs, fat: body.fat ?? cur.fat, fibre: body.fibre ?? cur.fibre, sugar: body.sugar ?? cur.sugar, sodium: body.sodium ?? cur.sodium });
+          db.prepare('UPDATE nutrition_entries SET quantity=?, meal_type=?, name=?, brand=?, serving_desc=?, kcal=?, protein=?, carbs=?, fat=?, fibre=?, sugar=?, sodium=? WHERE id=?')
+            .run(quantity, mt, f.name, f.brand, f.serving_desc, f.kcal, f.protein, f.carbs, f.fat, f.fibre, f.sugar, f.sodium, id);
+        } else {
+          db.prepare('UPDATE nutrition_entries SET quantity=?, meal_type=? WHERE id=?').run(quantity, mt, id);
+        }
+        await flush();
+        return db.prepare('SELECT * FROM nutrition_entries WHERE id = ?').get(id) as DiaryEntry;
+      },
+      remove: async (id: number) => { await ok(); getDb().prepare('DELETE FROM nutrition_entries WHERE id = ?').run(id); await flush(); return { deleted: true }; },
+      // Copy every entry from the most recent prior day that has any logs into `date`.
+      duplicateYesterday: async (date: string) => {
+        await ok();
+        const to = reqDate(date);
+        const db = getDb();
+        const src = db.prepare('SELECT DISTINCT date FROM nutrition_entries WHERE date < ? ORDER BY date DESC LIMIT 1').get(to) as { date: string } | undefined;
+        if (!src) return { copied: 0 };
+        return withTx(() => {
+          const rows = db.prepare('SELECT * FROM nutrition_entries WHERE date = ? ORDER BY meal_type, position').all(src.date) as DiaryEntry[];
+          let copied = 0;
+          for (const r of rows) {
+            const pos = db.prepare('SELECT COALESCE(MAX(position), -1) + 1 AS p FROM nutrition_entries WHERE date = ? AND meal_type = ?').get(to, r.meal_type)!.p as number;
+            db.prepare(`INSERT INTO nutrition_entries (date, meal_type, position, food_id, quantity, name, brand, serving_desc, kcal, protein, carbs, fat, fibre, sugar, sodium, logged_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+              .run(to, r.meal_type, pos, r.food_id, r.quantity, r.name, r.brand, r.serving_desc, r.kcal, r.protein, r.carbs, r.fat, r.fibre, r.sugar, r.sodium, localISO());
+            copied++;
+          }
+          return { copied, from: src.date };
+        });
+      },
+      // Copy one meal section from another day into a (possibly different) meal on `date`.
+      copyMeal: async (body: { from_date: string; from_meal: MealType; date: string; meal_type?: MealType }) => {
+        await ok();
+        const from = reqDate(body.from_date); const to = reqDate(body.date);
+        const fromMt = mealType(body.from_meal); const toMt = mealType(body.meal_type, fromMt);
+        const db = getDb();
+        return withTx(() => {
+          const rows = db.prepare('SELECT * FROM nutrition_entries WHERE date = ? AND meal_type = ? ORDER BY position').all(from, fromMt) as DiaryEntry[];
+          let copied = 0;
+          for (const r of rows) {
+            const pos = db.prepare('SELECT COALESCE(MAX(position), -1) + 1 AS p FROM nutrition_entries WHERE date = ? AND meal_type = ?').get(to, toMt)!.p as number;
+            db.prepare(`INSERT INTO nutrition_entries (date, meal_type, position, food_id, quantity, name, brand, serving_desc, kcal, protein, carbs, fat, fibre, sugar, sodium, logged_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+              .run(to, toMt, pos, r.food_id, r.quantity, r.name, r.brand, r.serving_desc, r.kcal, r.protein, r.carbs, r.fat, r.fibre, r.sugar, r.sodium, localISO());
+            copied++;
+          }
+          return { copied };
+        });
+      },
+      // One-click log a saved meal/recipe (default one serving) into the diary.
+      logMeal: async (body: { meal_id: number; date: string; meal_type?: MealType; servings?: number }) => {
+        await ok();
+        const to = reqDate(body.date); const mt = mealType(body.meal_type);
+        const meal = fullMeal(Number(body.meal_id));
+        if (!meal) throw new UserError('Meal not found');
+        const portions = nn(body.servings ?? 1, 0.01, 50, 1);
+        const db = getDb();
+        return withTx(() => {
+          let logged = 0;
+          for (const it of meal.items) {
+            const qty = (it.quantity * portions) / (meal.servings || 1);
+            const pos = db.prepare('SELECT COALESCE(MAX(position), -1) + 1 AS p FROM nutrition_entries WHERE date = ? AND meal_type = ?').get(to, mt)!.p as number;
+            db.prepare(`INSERT INTO nutrition_entries (date, meal_type, position, food_id, quantity, name, brand, serving_desc, kcal, protein, carbs, fat, fibre, sugar, sodium, logged_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+              .run(to, mt, pos, it.food_id, qty, it.name, '', meal.name, it.kcal, it.protein, it.carbs, it.fat, it.fibre, it.sugar, it.sodium, localISO());
+            logged++;
+          }
+          return { logged, meal: meal.name };
+        });
+      },
+    },
+
+    meals: {
+      list: async (): Promise<Meal[]> => {
+        await ok();
+        return (getDb().prepare('SELECT id FROM meals WHERE archived = 0 ORDER BY created_at DESC, id DESC').all() as any[]).map((r) => fullMeal(r.id)!);
+      },
+      get: async (id: number): Promise<Meal> => { await ok(); const m = fullMeal(Number(id)); if (!m) throw new UserError('Meal not found'); return m; },
+      create: async (body: any): Promise<Meal> => {
+        await ok();
+        return withTx(() => {
+          const id = getDb().prepare('INSERT INTO meals (name, note, servings, created_at) VALUES (?, ?, ?, ?)')
+            .run(reqName(body.name, 'Meal'), String(body.note || '').slice(0, 500), nn(body.servings ?? 1, 0.1, 100, 1), localISO()).lastInsertRowid as number;
+          replaceMealItems(id, body.items || []);
+          return fullMeal(id)!;
+        });
+      },
+      update: async (id: number, body: any): Promise<Meal> => {
+        await ok();
+        return withTx(() => {
+          getDb().prepare('UPDATE meals SET name = COALESCE(?, name), note = COALESCE(?, note), servings = COALESCE(?, servings) WHERE id = ?')
+            .run(body.name != null ? reqName(body.name, 'Meal') : null, body.note != null ? String(body.note).slice(0, 500) : null, body.servings != null ? nn(body.servings, 0.1, 100, 1) : null, id);
+          if (body.items) replaceMealItems(Number(id), body.items);
+          return fullMeal(Number(id))!;
+        });
+      },
+      remove: async (id: number) => {
+        await ok();
+        const db = getDb();
+        // meal_items cascade-delete; keep it simple and hard-delete the saved meal
+        db.prepare('DELETE FROM meals WHERE id = ?').run(id);
+        await flush();
+        return { deleted: true };
+      },
+    },
+
+    goals: {
+      _read: (): NutritionGoal | null => (getDb().prepare('SELECT * FROM nutrition_goals WHERE id = 1').get() as NutritionGoal) || null,
+      get: async (): Promise<NutritionGoal | null> => { await ok(); return api.nutrition.goals._read(); },
+      // Compute target calories/macros from a profile without saving (live calculator preview).
+      preview: async (profile: any): Promise<nutri.Targets | null> => {
+        await ok();
+        const weight_kg = profile.weight_kg != null ? Number(profile.weight_kg) : (nutri.weightOn(localDate()) ?? null);
+        return nutri.computeTargets({ sex: profile.sex, age: profile.age != null ? Number(profile.age) : null, height_cm: profile.height_cm != null ? Number(profile.height_cm) : null, weight_kg, activity: profile.activity, goal_type: profile.goal_type });
+      },
+      put: async (body: any): Promise<NutritionGoal> => {
+        await ok();
+        const db = getDb();
+        const cur = api.nutrition.goals._read();
+        const goal_type = ['lose', 'maintain', 'gain', 'performance'].includes(body.goal_type) ? body.goal_type : (cur?.goal_type || 'maintain');
+        const sex = body.sex === 'male' || body.sex === 'female' ? body.sex : (body.sex === null ? null : cur?.sex ?? null);
+        const age = body.age !== undefined ? nnOrNull(body.age, 13, 100) : cur?.age ?? null;
+        const height_cm = body.height_cm !== undefined ? nnOrNull(body.height_cm, 100, 230) : cur?.height_cm ?? null;
+        const activity = body.activity !== undefined ? String(body.activity || '') || null : cur?.activity ?? null;
+        const target_weight = body.target_weight !== undefined ? nnOrNull(body.target_weight, 30, 400) : cur?.target_weight ?? null;
+        const add_burned = body.add_burned !== undefined ? (body.add_burned ? 1 : 0) : (cur?.add_burned ?? 0);
+        const auto = body.auto !== undefined ? (body.auto ? 1 : 0) : (cur?.auto ?? 1);
+        // start from current effective targets
+        let calories = cur?.calories ?? null, protein = cur?.protein ?? null, carbs = cur?.carbs ?? null, fat = cur?.fat ?? null;
+        // recompute from profile when in auto mode and we have enough data
+        if (auto) {
+          const weight_kg = body.weight_kg != null ? Number(body.weight_kg) : nutri.weightOn(localDate());
+          const t = nutri.computeTargets({ sex, age, height_cm, weight_kg, activity, goal_type });
+          if (t) { calories = t.calories; protein = t.protein; carbs = t.carbs; fat = t.fat; }
+        }
+        // explicit manual overrides always win
+        if (body.calories !== undefined) calories = nnOrNull(body.calories, 800, 10000);
+        if (body.protein !== undefined) protein = nnOrNull(body.protein, 0, 1000);
+        if (body.carbs !== undefined) carbs = nnOrNull(body.carbs, 0, 2000);
+        if (body.fat !== undefined) fat = nnOrNull(body.fat, 0, 1000);
+        db.prepare(`INSERT INTO nutrition_goals (id, goal_type, sex, age, height_cm, activity, target_weight, calories, protein, carbs, fat, auto, add_burned, updated_at)
+          VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET goal_type=excluded.goal_type, sex=excluded.sex, age=excluded.age, height_cm=excluded.height_cm, activity=excluded.activity, target_weight=excluded.target_weight, calories=excluded.calories, protein=excluded.protein, carbs=excluded.carbs, fat=excluded.fat, auto=excluded.auto, add_burned=excluded.add_burned, updated_at=excluded.updated_at`)
+          .run(goal_type, sex, age, height_cm, activity, target_weight, calories, protein, carbs, fat, auto, add_burned, localISO());
+        await flush();
+        return api.nutrition.goals._read()!;
+      },
+    },
+
+    water: {
+      get: async (date: string): Promise<number> => { await ok(); const r = getDb().prepare('SELECT ml FROM water_tracking WHERE date = ?').get(reqDate(date)) as { ml: number } | undefined; return r?.ml || 0; },
+      set: async (date: string, ml: number): Promise<number> => {
+        await ok();
+        const d = reqDate(date); const v = nn(ml, 0, 20000, 0);
+        getDb().prepare('INSERT INTO water_tracking (date, ml) VALUES (?, ?) ON CONFLICT(date) DO UPDATE SET ml = excluded.ml').run(d, v);
+        await flush();
+        return v;
+      },
+      add: async (date: string, delta: number): Promise<number> => {
+        await ok();
+        const d = reqDate(date);
+        const cur = (getDb().prepare('SELECT ml FROM water_tracking WHERE date = ?').get(d) as { ml: number } | undefined)?.ml || 0;
+        return api.nutrition.water.set(d, Math.max(0, cur + Number(delta || 0)));
+      },
+    },
+
+    insights: async (): Promise<NutritionInsight[]> => { await ok(); return nutri.insights(); },
+    report: async (range: 'week' | 'month' = 'week', anchor?: string) => {
+      await ok();
+      if (range === 'month') {
+        const m = anchor || localDate().slice(0, 7);
+        const start = m + '-01';
+        const d = new Date(start + 'T00:00:00'); d.setMonth(d.getMonth() + 1);
+        const end = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
+        return nutri.nutritionPeriod(start, end);
+      }
+      const anyDay = anchor || localDate();
+      const dd = new Date(anyDay + 'T00:00:00'); const dow = (dd.getDay() + 6) % 7; dd.setDate(dd.getDate() - dow);
+      const start = localDate(dd);
+      const endD = new Date(start + 'T00:00:00'); endD.setDate(endD.getDate() + 7);
+      return nutri.nutritionPeriod(start, localDate(endD));
     },
   },
 

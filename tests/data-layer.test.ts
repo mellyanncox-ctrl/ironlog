@@ -284,6 +284,122 @@ async function throws(fn: () => Promise<any>, name: string, match?: RegExp) {
   ok(s.units === 'lb', 'valid settings saved');
   await api.settings.put({ units: 'kg' });
 
+  console.log('20. Nutrition — food library + diary');
+  const foodHits = await api.nutrition.foods.search('chicken');
+  ok(foodHits.length > 0 && foodHits.some((f) => /chicken/i.test(f.name)), 'food search finds seeded foods');
+  const allFoods = await api.nutrition.foods.search('', 500);
+  ok(allFoods.length >= 80, `seed food library present (${allFoods.length})`);
+  const cf = await api.nutrition.foods.create({ name: 'Test Shake', serving_desc: '1 scoop', kcal: 200, protein: 40, carbs: 5, fat: 2 });
+  ok(cf.id > 0 && cf.is_custom === 1, 'create custom food');
+  await throws(() => api.nutrition.foods.create({ name: '   ' }), 'blank food name rejected', /required/);
+  const cfUpd = await api.nutrition.foods.update(cf.id, { name: 'Test Shake', serving_desc: '1 scoop', kcal: 210, protein: 41, carbs: 5, fat: 2 });
+  ok(cfUpd.kcal === 210, 'edit custom food');
+  ok((await api.nutrition.foods.toggleFavourite(cf.id)).favourite === 1, 'toggle favourite');
+
+  const T = '2031-03-10';
+  const e1 = await api.nutrition.diary.add({ date: T, meal_type: 'lunch', food_id: cf.id, quantity: 2 });
+  ok(e1.id > 0 && e1.food_id === cf.id, 'add food to diary');
+  let day = await api.nutrition.diary.day(T);
+  ok(day.totals.kcal === 420 && day.totals.protein === 82, `day totals scale by servings (${day.totals.kcal}/${day.totals.protein})`);
+  const lunch = day.meals.find((m) => m.meal_type === 'lunch')!;
+  ok(lunch.entries.length === 1 && lunch.totals.kcal === 420, 'per-meal section totals');
+  await api.nutrition.diary.update(e1.id, { quantity: 1 });
+  day = await api.nutrition.diary.day(T);
+  ok(day.totals.kcal === 210, 'changing servings updates totals');
+  // snapshot integrity: editing the source food must NOT rewrite logged history
+  await api.nutrition.foods.update(cf.id, { name: 'Test Shake', serving_desc: '1 scoop', kcal: 999, protein: 99, carbs: 9, fat: 9 });
+  day = await api.nutrition.diary.day(T);
+  ok(day.totals.kcal === 210, 'logged entry keeps its snapshot after the food is edited');
+  await api.nutrition.diary.add({ date: T, meal_type: 'snacks', name: 'Coffee', kcal: 5 });
+  day = await api.nutrition.diary.day(T);
+  ok(day.totals.kcal === 215, 'quick add adds free-form calories');
+  await api.nutrition.diary.remove(e1.id);
+  day = await api.nutrition.diary.day(T);
+  ok(day.totals.kcal === 5, 'delete entry removes its calories');
+  const emptyDay = await api.nutrition.diary.day('2035-12-25');
+  ok(emptyDay.totals.kcal === 0 && emptyDay.meals.length === 4, 'empty day returns four zeroed meal sections');
+  await throws(() => api.nutrition.diary.day('bad-date'), 'bad diary date rejected', /valid date/);
+
+  console.log('21. Goals — TDEE + macros + budget');
+  const preview = await api.nutrition.goals.preview({ sex: 'male', age: 30, height_cm: 180, weight_kg: 80, activity: 'moderate', goal_type: 'maintain' });
+  ok(preview != null && preview.calories > 2000 && preview.calories < 3200, `Mifflin-St Jeor TDEE computed (${preview?.calories})`);
+  ok(preview!.protein >= 140 && preview!.carbs > 0 && preview!.fat > 0, 'macros split from calorie target');
+  const gLose = await api.nutrition.goals.put({ goal_type: 'lose', sex: 'male', age: 30, height_cm: 180, activity: 'moderate', auto: true, weight_kg: 80 });
+  ok(gLose.calories! < preview!.calories, 'lose goal applies a deficit');
+  ok(gLose.protein! >= preview!.protein, 'cut raises the protein target');
+  const gManual = await api.nutrition.goals.put({ auto: false, calories: 2500, protein: 180, carbs: 250, fat: 70 });
+  ok(gManual.calories === 2500 && gManual.protein === 180, 'manual targets override the calculator');
+  await api.nutrition.diary.add({ date: T, meal_type: 'breakfast', name: 'Big meal', kcal: 500 });
+  day = await api.nutrition.diary.day(T);
+  ok(day.targets!.calories === 2500 && day.remaining === 2500 - 505, `remaining = target − eaten (${day.remaining})`);
+  await api.garmin.importActivities([{ activity_type: 'strength_training', name: 'Gym', started_at: T + 'T18:00:00', duration_s: 3600, calories: 400 }]);
+  await api.nutrition.goals.put({ add_burned: true });
+  day = await api.nutrition.diary.day(T);
+  ok(day.budget === 2500 + 400, `burned calories add to the budget only when enabled (${day.budget})`);
+  await api.nutrition.goals.put({ add_burned: false });
+
+  console.log('22. Meals, water, insights, reports, cleanup');
+  const meal = await api.nutrition.meals.create({ name: 'Test Meal', servings: 2, items: [{ food_id: cf.id, quantity: 2 }, { name: 'Rice', quantity: 1, kcal: 200, protein: 4, carbs: 44, fat: 1 }] });
+  ok(meal.items.length === 2 && meal.total.kcal === 2198 && meal.per_serving.kcal === 1099, `meal total + per-serving computed (${meal.total.kcal}/${meal.per_serving.kcal})`);
+  const beforeMeal = (await api.nutrition.diary.day('2031-03-11')).totals.kcal;
+  const lm = await api.nutrition.diary.logMeal({ meal_id: meal.id, date: '2031-03-11', meal_type: 'dinner' });
+  ok(lm.logged === 2, 'one-click meal log expands to its items');
+  const afterMeal = await api.nutrition.diary.day('2031-03-11');
+  ok(Math.round(afterMeal.totals.kcal) === Math.round(beforeMeal + meal.per_serving.kcal), `logging one serving adds per-serving calories (${afterMeal.totals.kcal})`);
+  const dupR = await api.nutrition.diary.duplicateYesterday('2031-03-12');
+  ok(dupR.copied > 0, `duplicate yesterday copies the prior logged day (${dupR.copied})`);
+  const cm = await api.nutrition.diary.copyMeal({ from_date: '2031-03-11', from_meal: 'dinner', date: '2031-03-13', meal_type: 'lunch' });
+  ok(cm.copied === 2, 'copy meal duplicates a section into another day/meal');
+  await api.nutrition.water.set(T, 500);
+  ok((await api.nutrition.water.get(T)) === 500, 'water set/get');
+  ok((await api.nutrition.water.add(T, 250)) === 750, 'water add accumulates');
+  const ins = await api.nutrition.insights();
+  ok(Array.isArray(ins), `insights returns an array (${ins.length} cards from demo data)`);
+  const wrN = await api.reports.weekly();
+  ok((wrN as any).nutrition != null && (wrN as any).nutrition.days_logged >= 1, 'weekly report merges a nutrition block');
+  ok((await api.nutrition.foods.remove(cf.id) as any).archived === true, 'a food used in the diary is archived, not hard-deleted');
+  // persistence: nutrition survives an export/import round-trip via the shared SQLite backup
+  const nBackup = await api.backup.export();
+  await api.nutrition.diary.add({ date: T, meal_type: 'snacks', name: 'Throwaway', kcal: 111 });
+  await api.backup.import(nBackup);
+  const restored = await api.nutrition.diary.day(T);
+  ok(restored.totals.kcal === 505 && restored.meals.some((m) => m.entries.length > 0), 'nutrition diary restored exactly from backup');
+
+  console.log('23. Barcode scanning — Open Food Facts parse + local cache');
+  const { parseOffProduct, fetchOpenFoodFacts, normalizeBarcode } = await import('../app/src/lib/openfoodfacts');
+  ok(normalizeBarcode('  5012345 678900 ') === '5012345678900', 'barcode normalized to digits');
+  ok(normalizeBarcode('abc') === null, 'junk barcode rejected');
+  const offServing = { status: 1, code: '5000', product: { code: '5000', product_name: 'Test Bar', brands: 'Acme, Other', serving_size: '40 g', serving_quantity: 40, nutriments: { 'energy-kcal_serving': 200, proteins_serving: 20, carbohydrates_serving: 18, fat_serving: 6, fiber_serving: 5, sugars_serving: 2, sodium_serving: 0.15 } } };
+  const d1 = parseOffProduct(offServing)!;
+  ok(d1 && d1.name === 'Test Bar' && d1.brand === 'Acme' && d1.kcal === 200 && d1.protein === 20 && d1.serving_grams === 40 && d1.sodium === 150, `OFF per-serving parse (${JSON.stringify(d1)})`);
+  const off100 = { status: 1, product: { code: '6001', product_name: 'Milk', brands: '', nutriments: { 'energy-kcal_100g': 64, proteins_100g: 3.4, carbohydrates_100g: 4.8, fat_100g: 3.6, salt_100g: 0.1 } } };
+  const d2 = parseOffProduct(off100)!;
+  ok(d2 && d2.serving_desc === '100 g' && d2.kcal === 64 && d2.sodium === 40, `OFF per-100g + salt→sodium (${d2?.sodium} mg)`);
+  ok(parseOffProduct({ status: 0 }) === null, 'not-found product parses to null');
+  ok(parseOffProduct({ status: 1, product: { product_name: 'No energy', nutriments: {} } }) === null, 'product without energy parses to null');
+
+  const fakeOff = (body: any, status = 200) => (async () => ({ ok: status >= 200 && status < 300, status, json: async () => body })) as unknown as typeof fetch;
+  const fetched = await fetchOpenFoodFacts('5000000000000', fakeOff(offServing));
+  ok(fetched != null && fetched.name === 'Test Bar', 'fetchOpenFoodFacts returns a draft');
+  ok((await fetchOpenFoodFacts('9999999999999', fakeOff({ status: 0 }))) === null, 'unknown barcode → null');
+  await throws(() => fetchOpenFoodFacts('5000000000000', fakeOff({}, 500)), 'HTTP error surfaces', /failed/i);
+
+  const bf = await api.nutrition.foods.create({ name: 'Scan Cache Bar', serving_desc: '1 bar', kcal: 150, protein: 12, barcode: '5012345678900' });
+  ok(bf.barcode === '5012345678900' && bf.source === 'barcode', 'food saved with its barcode (source=barcode)');
+  ok((await api.nutrition.foods.byBarcode('5012345678900'))?.id === bf.id, 'byBarcode finds the cached food (offline path)');
+  ok((await api.nutrition.foods.lookupBarcode('5012345678900')).source === 'local', 'lookupBarcode prefers the local cache');
+  const offHit = await api.nutrition.foods.lookupBarcode('4000000', fakeOff(offServing));
+  ok(offHit.source === 'off' && (offHit as any).draft.name === 'Test Bar', 'lookupBarcode falls back to Open Food Facts');
+  ok((await api.nutrition.foods.lookupBarcode('4000001', fakeOff({ status: 0 }))).source === 'notfound', 'lookupBarcode reports not-found');
+  ok((await api.nutrition.foods.lookupBarcode('4000002', fakeOff({}, 500))).source === 'error', 'network error returns a tagged outcome, never throws');
+  ok((await api.nutrition.foods.lookupBarcode('bad')).source === 'notfound', 'invalid barcode handled gracefully');
+  // editing a scanned food must not wipe its barcode when the caller omits it
+  const bfEdited = await api.nutrition.foods.update(bf.id, { name: 'Scan Cache Bar', serving_desc: '1 bar', kcal: 155, protein: 12 });
+  ok(bfEdited.barcode === '5012345678900', 'editing a food without a barcode field keeps the stored barcode');
+  const bBackup = await api.backup.export();
+  await api.backup.import(bBackup);
+  ok((await api.nutrition.foods.byBarcode('5012345678900')) != null, 'barcode persists through a backup round-trip');
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 })().catch((e) => { console.error('SUITE CRASHED:', e); process.exit(1); });

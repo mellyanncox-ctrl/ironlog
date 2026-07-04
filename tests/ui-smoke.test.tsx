@@ -49,6 +49,7 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
   }
 
   await mountRoute('', ['Ironlog', 'week streak']);
+  await mountRoute('food', ['Today', 'Breakfast', 'Snacks', 'Copy yesterday']);
   await mountRoute('history', ['Push Day', 'Leg Day']);
   await mountRoute('routines', ['Pull Day', 'Start workout']);
   await mountRoute('library', ['Bench Press', 'Deadlift']);

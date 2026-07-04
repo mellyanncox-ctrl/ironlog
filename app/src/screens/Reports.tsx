@@ -96,6 +96,24 @@ export function Reports({ onNav }: { onNav: (r: string) => void }) {
             </Card>
           )}
 
+          {(report as any).nutrition && (report as any).nutrition.days_logged > 0 && (
+            <Card className="p-4">
+              <div className="text-[13px] font-semibold text-mut mb-2">🍽 Nutrition <span className="text-dim font-normal">· {(report as any).nutrition.days_logged} days logged</span></div>
+              <div className="grid grid-cols-3 gap-y-3">
+                <Mini label="Avg calories" v={(report as any).nutrition.avg_calories?.toLocaleString() ?? '–'} />
+                <Mini label="Avg protein" v={(report as any).nutrition.avg_protein != null ? `${(report as any).nutrition.avg_protein}g` : '–'} />
+                <Mini label="Avg carbs" v={(report as any).nutrition.avg_carbs != null ? `${(report as any).nutrition.avg_carbs}g` : '–'} />
+                <Mini label="Avg fat" v={(report as any).nutrition.avg_fat != null ? `${(report as any).nutrition.avg_fat}g` : '–'} />
+                {(report as any).nutrition.protein_target != null && (
+                  <Mini label="Protein goal" v={`${(report as any).nutrition.protein_hit_days}/${(report as any).nutrition.days_logged} days`} />
+                )}
+                {(report as any).nutrition.weight_change != null && (
+                  <Mini label="Weight change" v={`${(report as any).nutrition.weight_change > 0 ? '+' : ''}${fmtWeight((report as any).nutrition.weight_change)}`} />
+                )}
+              </div>
+            </Card>
+          )}
+
           {report.recovery && (
             <Card className="p-4">
               <div className="text-[13px] font-semibold text-mut mb-2">Recovery <span className="text-dim font-normal">· Garmin · {report.recovery.days} days</span></div>
