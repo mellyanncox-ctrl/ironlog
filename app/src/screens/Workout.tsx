@@ -261,7 +261,7 @@ function SetLine({ s, idx, we, onChange, workout, setW }: {
         onTouchStart={onTouchStart} onTouchMove={onTouchMove} onTouchEnd={onTouchEnd}
         style={{ transform: `translateX(${dx}px)`, transition: swipe.current ? 'none' : 'transform 0.18s ease' }}
         className="relative grid grid-cols-[36px_1fr_72px_60px_46px_40px] gap-1 items-center px-2 py-[3px] rounded-lg bg-surface">
-      {s.completed && <span className="absolute inset-0 rounded-lg bg-good/10 pointer-events-none" />}
+      {s.completed ? <span className="absolute inset-0 rounded-lg bg-good/10 pointer-events-none" /> : null}
       <button onClick={cycleType}
         className={cx('h-8 rounded-lg text-[13px] font-bold', SET_TYPE_COLOR[s.set_type], s.set_type !== 'working' && 'bg-surface2')}>
         {label || workingIdx + 1}
