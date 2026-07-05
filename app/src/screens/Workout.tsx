@@ -117,6 +117,8 @@ function ExerciseCard({ we, prev, onChange, workout, setW }: {
 }) {
   const [menu, setMenu] = useState(false);
   const ssColor = we.superset_group != null ? SS_COLORS[we.superset_group % SS_COLORS.length] : null;
+  const isStretch = we.exercise_type !== 'strength';
+  const isStatic = we.exercise_type === 'static';
 
   async function toggleSuperset() {
     if (we.superset_group != null) {
@@ -148,9 +150,15 @@ function ExerciseCard({ we, prev, onChange, workout, setW }: {
 
       {/* sets table */}
       <div className="px-2 pb-2">
-        <div className="grid grid-cols-[36px_1fr_72px_60px_46px_40px] gap-1 px-2 py-1 text-[10.5px] uppercase tracking-wide text-dim font-medium">
-          <span>Set</span><span>Previous</span><span className="text-center">{getUnits()}</span><span className="text-center">Reps</span><span className="text-center">RPE</span><span></span>
-        </div>
+        {isStretch ? (
+          <div className="grid grid-cols-[36px_1fr_1fr_40px] gap-1 px-2 py-1 text-[10.5px] uppercase tracking-wide text-dim font-medium">
+            <span>Set</span><span>Previous</span><span className="text-center">{isStatic ? 'Hold (s)' : 'Reps'}</span><span></span>
+          </div>
+        ) : (
+          <div className="grid grid-cols-[36px_1fr_72px_60px_46px_40px] gap-1 px-2 py-1 text-[10.5px] uppercase tracking-wide text-dim font-medium">
+            <span>Set</span><span>Previous</span><span className="text-center">{getUnits()}</span><span className="text-center">Reps</span><span className="text-center">RPE</span><span></span>
+          </div>
+        )}
         {we.sets.map((s, idx) => (
           <SetLine key={s.id} s={s} idx={idx} we={we} onChange={onChange} workout={workout} setW={setW} />
         ))}
@@ -195,10 +203,13 @@ function SetLine({ s, idx, we, onChange, workout, setW }: {
   s: SetRow; idx: number; we: WorkoutExercise; onChange: () => void;
   workout: Workout; setW: (w: Workout) => void;
 }) {
+  const isStretch = we.exercise_type !== 'strength';
+  const isStatic = we.exercise_type === 'static';
   const [weight, setWeight] = useState<string>(s.weight != null ? String(kgOut(s.weight)) : '');
   const [reps, setReps] = useState<string>(s.reps != null ? String(s.reps) : '');
   const [rpe, setRpe] = useState<string>(s.rpe != null ? String(s.rpe) : '');
-  useEffect(() => { setWeight(s.weight != null ? String(kgOut(s.weight)) : ''); setReps(s.reps != null ? String(s.reps) : ''); setRpe(s.rpe != null ? String(s.rpe) : ''); }, [s.id, s.weight, s.reps, s.rpe]);
+  const [dur, setDur] = useState<string>(s.duration_s != null ? String(s.duration_s) : '');
+  useEffect(() => { setWeight(s.weight != null ? String(kgOut(s.weight)) : ''); setReps(s.reps != null ? String(s.reps) : ''); setRpe(s.rpe != null ? String(s.rpe) : ''); setDur(s.duration_s != null ? String(s.duration_s) : ''); }, [s.id, s.weight, s.reps, s.rpe, s.duration_s]);
 
   // Swipe-left to reveal delete. Only engages on a deliberate horizontal drag,
   // so typing in the inputs and vertical scrolling are unaffected.
@@ -219,6 +230,14 @@ function SetLine({ s, idx, we, onChange, workout, setW }: {
   const label = s.set_type === 'working' ? String(workingIdx + 1) : SET_TYPE_LABEL[s.set_type];
 
   function save(extra: any = {}) {
+    if (isStretch) {
+      return api.sets.update(s.id, {
+        weight: null, rpe: null,
+        reps: isStatic ? null : (reps === '' ? null : Number(reps)),
+        duration_s: isStatic ? (dur === '' ? null : Number(dur)) : null,
+        ...extra,
+      });
+    }
     return api.sets.update(s.id, {
       weight: weight === '' ? null : inKg(Number(weight)),
       reps: reps === '' ? null : Number(reps),
@@ -234,14 +253,29 @@ function SetLine({ s, idx, we, onChange, workout, setW }: {
 
   async function toggleDone() {
     const nowDone = !s.completed;
-    if (nowDone && weight === '' && prevSet) setWeight(String(kgOut(prevSet.weight) ?? ''));
-    if (nowDone && reps === '' && prevSet) setReps(String(prevSet.reps ?? ''));
-    const body = {
-      completed: nowDone,
-      weight: (weight === '' && nowDone && prevSet) ? prevSet.weight : (weight === '' ? null : inKg(Number(weight))),
-      reps: (reps === '' && nowDone && prevSet) ? prevSet.reps : (reps === '' ? null : Number(reps)),
-      rpe: rpe === '' ? null : Number(rpe),
-    };
+    let body: any;
+    if (isStretch && isStatic) {
+      if (nowDone && dur === '' && prevSet?.duration_s != null) setDur(String(prevSet.duration_s));
+      body = {
+        completed: nowDone, weight: null, reps: null, rpe: null,
+        duration_s: (dur === '' && nowDone && prevSet) ? prevSet.duration_s : (dur === '' ? null : Number(dur)),
+      };
+    } else if (isStretch) {
+      if (nowDone && reps === '' && prevSet?.reps != null) setReps(String(prevSet.reps));
+      body = {
+        completed: nowDone, weight: null, duration_s: null, rpe: null,
+        reps: (reps === '' && nowDone && prevSet) ? prevSet.reps : (reps === '' ? null : Number(reps)),
+      };
+    } else {
+      if (nowDone && weight === '' && prevSet) setWeight(String(kgOut(prevSet.weight) ?? ''));
+      if (nowDone && reps === '' && prevSet) setReps(String(prevSet.reps ?? ''));
+      body = {
+        completed: nowDone,
+        weight: (weight === '' && nowDone && prevSet) ? prevSet.weight : (weight === '' ? null : inKg(Number(weight))),
+        reps: (reps === '' && nowDone && prevSet) ? prevSet.reps : (reps === '' ? null : Number(reps)),
+        rpe: rpe === '' ? null : Number(rpe),
+      };
+    }
     await api.sets.update(s.id, body);
     if (nowDone) startRestTimer(we.rest_seconds);
     onChange();
@@ -260,24 +294,47 @@ function SetLine({ s, idx, we, onChange, workout, setW }: {
       <div
         onTouchStart={onTouchStart} onTouchMove={onTouchMove} onTouchEnd={onTouchEnd}
         style={{ transform: `translateX(${dx}px)`, transition: swipe.current ? 'none' : 'transform 0.18s ease' }}
-        className="relative grid grid-cols-[36px_1fr_72px_60px_46px_40px] gap-1 items-center px-2 py-[3px] rounded-lg bg-surface">
+        className={cx('relative grid gap-1 items-center px-2 py-[3px] rounded-lg bg-surface', isStretch ? 'grid-cols-[36px_1fr_1fr_40px]' : 'grid-cols-[36px_1fr_72px_60px_46px_40px]')}>
       {s.completed ? <span className="absolute inset-0 rounded-lg bg-good/10 pointer-events-none" /> : null}
-      <button onClick={cycleType}
-        className={cx('h-8 rounded-lg text-[13px] font-bold', SET_TYPE_COLOR[s.set_type], s.set_type !== 'working' && 'bg-surface2')}>
-        {label || workingIdx + 1}
-      </button>
-      <div className="text-[12px] text-dim tabular-nums truncate">
-        {prevSet ? `${fmtWeight(prevSet.weight, false)} × ${prevSet.reps}${prevSet.rpe ? ` @${prevSet.rpe}` : ''}` : '—'}
-      </div>
-      <input inputMode="decimal" value={weight} placeholder={prevSet ? String(kgOut(prevSet.weight) ?? '') : '0'}
-        onChange={(e) => setWeight(e.target.value)} onBlur={() => save()}
-        className={cx('h-8 rounded-lg text-center text-[14px] font-semibold tabular-nums bg-surface2 outline-none focus:ring-1 focus:ring-accent/60', s.completed && 'bg-transparent')} />
-      <input inputMode="numeric" value={reps} placeholder={prevSet ? String(prevSet.reps ?? '') : '0'}
-        onChange={(e) => setReps(e.target.value)} onBlur={() => save()}
-        className={cx('h-8 rounded-lg text-center text-[14px] font-semibold tabular-nums bg-surface2 outline-none focus:ring-1 focus:ring-accent/60', s.completed && 'bg-transparent')} />
-      <input inputMode="decimal" value={rpe} placeholder="–"
-        onChange={(e) => setRpe(e.target.value)} onBlur={() => save()}
-        className={cx('h-8 rounded-lg text-center text-[13px] tabular-nums bg-surface2 text-mut outline-none focus:ring-1 focus:ring-accent/60', s.completed && 'bg-transparent')} />
+      {isStretch ? (
+        <span className="h-8 flex items-center justify-center text-[13px] font-bold text-mut">{workingIdx + 1}</span>
+      ) : (
+        <button onClick={cycleType}
+          className={cx('h-8 rounded-lg text-[13px] font-bold', SET_TYPE_COLOR[s.set_type], s.set_type !== 'working' && 'bg-surface2')}>
+          {label || workingIdx + 1}
+        </button>
+      )}
+      {isStretch ? (
+        <>
+          <div className="text-[12px] text-dim tabular-nums truncate">
+            {prevSet ? (isStatic ? (prevSet.duration_s != null ? `${prevSet.duration_s}s` : '—') : (prevSet.reps != null ? `${prevSet.reps} reps` : '—')) : '—'}
+          </div>
+          {isStatic ? (
+            <input inputMode="numeric" value={dur} placeholder={prevSet?.duration_s != null ? String(prevSet.duration_s) : '30'}
+              onChange={(e) => setDur(e.target.value)} onBlur={() => save()}
+              className={cx('h-8 rounded-lg text-center text-[14px] font-semibold tabular-nums bg-surface2 outline-none focus:ring-1 focus:ring-accent/60', s.completed && 'bg-transparent')} />
+          ) : (
+            <input inputMode="numeric" value={reps} placeholder={prevSet?.reps != null ? String(prevSet.reps) : '10'}
+              onChange={(e) => setReps(e.target.value)} onBlur={() => save()}
+              className={cx('h-8 rounded-lg text-center text-[14px] font-semibold tabular-nums bg-surface2 outline-none focus:ring-1 focus:ring-accent/60', s.completed && 'bg-transparent')} />
+          )}
+        </>
+      ) : (
+        <>
+          <div className="text-[12px] text-dim tabular-nums truncate">
+            {prevSet ? `${fmtWeight(prevSet.weight, false)} × ${prevSet.reps}${prevSet.rpe ? ` @${prevSet.rpe}` : ''}` : '—'}
+          </div>
+          <input inputMode="decimal" value={weight} placeholder={prevSet ? String(kgOut(prevSet.weight) ?? '') : '0'}
+            onChange={(e) => setWeight(e.target.value)} onBlur={() => save()}
+            className={cx('h-8 rounded-lg text-center text-[14px] font-semibold tabular-nums bg-surface2 outline-none focus:ring-1 focus:ring-accent/60', s.completed && 'bg-transparent')} />
+          <input inputMode="numeric" value={reps} placeholder={prevSet ? String(prevSet.reps ?? '') : '0'}
+            onChange={(e) => setReps(e.target.value)} onBlur={() => save()}
+            className={cx('h-8 rounded-lg text-center text-[14px] font-semibold tabular-nums bg-surface2 outline-none focus:ring-1 focus:ring-accent/60', s.completed && 'bg-transparent')} />
+          <input inputMode="decimal" value={rpe} placeholder="–"
+            onChange={(e) => setRpe(e.target.value)} onBlur={() => save()}
+            className={cx('h-8 rounded-lg text-center text-[13px] tabular-nums bg-surface2 text-mut outline-none focus:ring-1 focus:ring-accent/60', s.completed && 'bg-transparent')} />
+        </>
+      )}
       <button onClick={toggleDone}
         className={cx('relative h-8 rounded-lg font-bold text-[15px] transition-colors', s.completed ? 'bg-good text-black' : 'bg-surface2 text-dim')}>
         ✓

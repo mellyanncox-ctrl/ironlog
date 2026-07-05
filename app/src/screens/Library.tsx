@@ -3,22 +3,30 @@ import { api, Exercise, ExerciseStats } from '../api';
 import { Card, Spinner, Pill, Button, Sheet, Field, TextInput, Select, confirmDialog } from '../components/ui';
 import { LineChart, BarChart } from '../components/charts';
 import { cap, cx, fmtDate, fmtWeight, MUSCLE_COLORS, fmtVolume } from '../util';
+import { EXERCISE_TYPES, EXERCISE_TYPE_LABELS } from '../db/schema';
+
+const TYPE_CHIP: Record<string, string> = { strength: 'Strength', dynamic: 'Dynamic', static: 'Static' };
 
 export function Library({ muscles, equipment, onNav }: { muscles: string[]; equipment: string[]; onNav: (r: string) => void }) {
   const [list, setList] = useState<Exercise[] | null>(null);
   const [q, setQ] = useState('');
   const [muscle, setMuscle] = useState('');
   const [equip, setEquip] = useState('');
+  const [type, setType] = useState('');
   useEffect(() => { api.exercises.list().then(setList); }, []);
   const filtered = useMemo(() => (list || []).filter((e) =>
-    (!q || e.name.toLowerCase().includes(q.toLowerCase())) && (!muscle || e.muscle === muscle) && (!equip || e.equipment === equip)
-  ), [list, q, muscle, equip]);
+    (!q || e.name.toLowerCase().includes(q.toLowerCase())) && (!muscle || e.muscle === muscle) && (!equip || e.equipment === equip) && (!type || e.exercise_type === type)
+  ), [list, q, muscle, equip, type]);
   if (!list) return <Spinner />;
 
   return (
     <div className="px-4 pt-2 pb-4">
       <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search exercises…"
         className="w-full bg-surface border border-edge rounded-xl px-3.5 py-2.5 text-[15px] outline-none focus:border-accent/60 placeholder:text-dim mb-2" />
+      <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1 mb-1">
+        <Chip label="All types" active={!type} onClick={() => setType('')} />
+        {EXERCISE_TYPES.map((t) => <Chip key={t} label={TYPE_CHIP[t]} active={type === t} onClick={() => setType(type === t ? '' : t)} />)}
+      </div>
       <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1 mb-1">
         <Chip label="All" active={!muscle} onClick={() => setMuscle('')} />
         {muscles.map((m) => <Chip key={m} label={cap(m)} active={muscle === m} onClick={() => setMuscle(muscle === m ? '' : m)} dot={MUSCLE_COLORS[m]} />)}
@@ -33,7 +41,7 @@ export function Library({ muscles, equipment, onNav }: { muscles: string[]; equi
             <div className="flex items-center gap-3">
               <span className="w-2 h-2 rounded-full shrink-0" style={{ background: MUSCLE_COLORS[e.muscle] || '#5b5b63' }} />
               <div className="grow min-w-0">
-                <div className="text-[14.5px] font-medium truncate">{e.name}{e.is_custom ? <span className="text-dim text-[11px] ml-1.5">custom</span> : null}</div>
+                <div className="text-[14.5px] font-medium truncate">{e.name}{e.exercise_type !== 'strength' ? <span className="text-accent text-[11px] ml-1.5">{TYPE_CHIP[e.exercise_type]}</span> : null}{e.is_custom ? <span className="text-dim text-[11px] ml-1.5">custom</span> : null}</div>
                 <div className="text-[12px] text-mut capitalize">{e.muscle}{e.secondary ? ` · +${e.secondary.split(',').length}` : ''} · {e.equipment}</div>
               </div>
               <span className="text-dim">›</span>
@@ -90,6 +98,7 @@ export function ExerciseDetail({ id, onNav, muscles, equipment }: { id: number; 
         <Button small kind="ghost" onClick={() => setEditing(true)}>Edit</Button>
       </div>
       <div className="flex gap-1.5 mb-4 flex-wrap">
+        {ex.exercise_type !== 'strength' && <Pill color="#4b93f8">{EXERCISE_TYPE_LABELS[ex.exercise_type]}</Pill>}
         <Pill color={MUSCLE_COLORS[ex.muscle]}>{cap(ex.muscle)}</Pill>
         {ex.secondary.split(',').filter(Boolean).map((m) => <Pill key={m}>{cap(m)}</Pill>)}
         <Pill>{cap(ex.equipment)}</Pill>
@@ -126,7 +135,9 @@ export function ExerciseDetail({ id, onNav, muscles, equipment }: { id: number; 
                 <div className="text-[13.5px] tabular-nums space-x-3">
                   {s.sets.map((x, i) => (
                     <span key={i} className={x.set_type === 'warmup' ? 'text-dim' : 'text-ink'}>
-                      {fmtWeight(x.weight, false)}×{x.reps}
+                      {ex.exercise_type === 'static' ? `${x.duration_s ?? '–'}s`
+                        : ex.exercise_type === 'dynamic' ? `${x.reps ?? '–'} reps`
+                        : `${fmtWeight(x.weight, false)}×${x.reps}`}
                     </span>
                   ))}
                 </div>
@@ -158,10 +169,15 @@ function PrStat({ label, v, sub, accent }: any) {
 function EditExercise({ ex, muscles, equipment, onSaved, onDeleted }: {
   ex: Exercise; muscles: string[]; equipment: string[]; onSaved: (e: Exercise) => void; onDeleted: () => void;
 }) {
-  const [form, setForm] = useState({ name: ex.name, muscle: ex.muscle, equipment: ex.equipment, secondary: ex.secondary });
+  const [form, setForm] = useState({ name: ex.name, muscle: ex.muscle, equipment: ex.equipment, secondary: ex.secondary, exercise_type: ex.exercise_type });
   return (
     <div className="pt-1">
       <Field label="Name"><TextInput value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
+      <Field label="Type">
+        <Select value={form.exercise_type} onChange={(e) => setForm({ ...form, exercise_type: e.target.value })}>
+          {EXERCISE_TYPES.map((t) => <option key={t} value={t}>{EXERCISE_TYPE_LABELS[t]}</option>)}
+        </Select>
+      </Field>
       <Field label="Primary muscle">
         <Select value={form.muscle} onChange={(e) => setForm({ ...form, muscle: e.target.value })}>
           {muscles.map((m) => <option key={m} value={m}>{cap(m)}</option>)}

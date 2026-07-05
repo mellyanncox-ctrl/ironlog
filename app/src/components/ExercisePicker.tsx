@@ -2,6 +2,9 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { api, Exercise } from '../api';
 import { Sheet, TextInput, Button, Field, Select, Pill } from './ui';
 import { cap, cx, MUSCLE_COLORS } from '../util';
+import { EXERCISE_TYPES, EXERCISE_TYPE_LABELS } from '../db/schema';
+
+const TYPE_CHIP: Record<string, string> = { strength: 'Strength', dynamic: 'Dynamic', static: 'Static' };
 
 export function ExercisePicker({ open, onClose, onPick, muscles, equipment }: {
   open: boolean; onClose: () => void; onPick: (e: Exercise) => void;
@@ -11,17 +14,19 @@ export function ExercisePicker({ open, onClose, onPick, muscles, equipment }: {
   const [q, setQ] = useState('');
   const [muscle, setMuscle] = useState('');
   const [equip, setEquip] = useState('');
+  const [type, setType] = useState('');
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState('');
-  const [newEx, setNewEx] = useState({ name: '', muscle: 'chest', equipment: 'barbell', secondary: '' });
+  const [newEx, setNewEx] = useState({ name: '', muscle: 'chest', equipment: 'barbell', secondary: '', exercise_type: 'strength' });
 
   useEffect(() => { if (open) api.exercises.list().then(setList); }, [open]);
 
   const filtered = useMemo(() => list.filter((e) =>
     (!q || e.name.toLowerCase().includes(q.toLowerCase())) &&
     (!muscle || e.muscle === muscle) &&
-    (!equip || e.equipment === equip)
-  ), [list, q, muscle, equip]);
+    (!equip || e.equipment === equip) &&
+    (!type || e.exercise_type === type)
+  ), [list, q, muscle, equip, type]);
 
   async function create() {
     if (!newEx.name.trim()) return;
@@ -29,7 +34,7 @@ export function ExercisePicker({ open, onClose, onPick, muscles, equipment }: {
       const ex = await api.exercises.create(newEx);
       setCreating(false);
       setCreateError('');
-      setNewEx({ name: '', muscle: 'chest', equipment: 'barbell', secondary: '' });
+      setNewEx({ name: '', muscle: 'chest', equipment: 'barbell', secondary: '', exercise_type: 'strength' });
       onPick(ex);
     } catch (e: any) {
       setCreateError(e.message || 'Could not create exercise');
@@ -41,6 +46,11 @@ export function ExercisePicker({ open, onClose, onPick, muscles, equipment }: {
       {creating ? (
         <div className="pt-2">
           <Field label="Name"><TextInput autoFocus value={newEx.name} onChange={(e) => setNewEx({ ...newEx, name: e.target.value })} placeholder="e.g. Cable Pullover" /></Field>
+          <Field label="Type">
+            <Select value={newEx.exercise_type} onChange={(e) => setNewEx({ ...newEx, exercise_type: e.target.value })}>
+              {EXERCISE_TYPES.map((t) => <option key={t} value={t}>{EXERCISE_TYPE_LABELS[t]}</option>)}
+            </Select>
+          </Field>
           <Field label="Primary muscle">
             <Select value={newEx.muscle} onChange={(e) => setNewEx({ ...newEx, muscle: e.target.value })}>
               {muscles.map((m) => <option key={m} value={m}>{cap(m)}</option>)}
@@ -62,6 +72,10 @@ export function ExercisePicker({ open, onClose, onPick, muscles, equipment }: {
           <div className="sticky top-0 bg-surface pb-2 z-10">
             <TextInput placeholder="Search exercises…" value={q} onChange={(e) => setQ(e.target.value)} />
             <div className="flex gap-2 mt-2 overflow-x-auto no-scrollbar -mx-1 px-1 pb-1">
+              <FilterChip label="All types" active={!type} onClick={() => setType('')} />
+              {EXERCISE_TYPES.map((t) => <FilterChip key={t} label={TYPE_CHIP[t]} active={type === t} onClick={() => setType(type === t ? '' : t)} />)}
+            </div>
+            <div className="flex gap-2 mt-1.5 overflow-x-auto no-scrollbar -mx-1 px-1 pb-1">
               <FilterChip label="All muscles" active={!muscle} onClick={() => setMuscle('')} />
               {muscles.map((m) => <FilterChip key={m} label={cap(m)} active={muscle === m} onClick={() => setMuscle(muscle === m ? '' : m)} color={MUSCLE_COLORS[m]} />)}
             </div>
@@ -78,7 +92,7 @@ export function ExercisePicker({ open, onClose, onPick, muscles, equipment }: {
               <button key={e.id} onClick={() => onPick(e)} className="w-full text-left py-3 px-1 flex items-center gap-3 active:bg-surface2 rounded-lg">
                 <span className="w-2 h-2 rounded-full shrink-0" style={{ background: MUSCLE_COLORS[e.muscle] || '#5b5b63' }} />
                 <span className="grow">
-                  <span className="block text-[15px] font-medium">{e.name}{e.is_custom ? <span className="text-dim text-[11px] ml-1.5">custom</span> : null}</span>
+                  <span className="block text-[15px] font-medium">{e.name}{e.exercise_type !== 'strength' ? <span className="text-accent text-[11px] ml-1.5">{TYPE_CHIP[e.exercise_type]}</span> : null}{e.is_custom ? <span className="text-dim text-[11px] ml-1.5">custom</span> : null}</span>
                   <span className="block text-[12px] text-mut capitalize">{e.muscle} · {e.equipment}</span>
                 </span>
               </button>

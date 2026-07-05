@@ -36,6 +36,22 @@ async function throws(fn: () => Promise<any>, name: string, match?: RegExp) {
   const archCheck = await api.exercises.getOne(exs[0].id);
   ok(archCheck != null && archCheck.name === exs[0].name, 'getOne fetches single exercise');
 
+  console.log('2b. Stretch library + hold-time logging');
+  const stretches = exs.filter((e) => e.exercise_type === 'dynamic' || e.exercise_type === 'static');
+  ok(stretches.length >= 20, `seeded stretch library (${stretches.length})`);
+  ok(exs.some((e) => e.exercise_type === 'dynamic') && exs.some((e) => e.exercise_type === 'static'), 'both dynamic and static stretches seeded');
+  const staticEx = await api.exercises.create({ name: 'Test Hamstring Hold', muscle: 'hamstrings', equipment: 'bodyweight', exercise_type: 'static' });
+  ok(staticEx.exercise_type === 'static', 'create persists exercise_type');
+  const sw = await api.workouts.create('Stretch session');
+  const swx = await api.workouts.addExercise(sw.id, staticEx.id);
+  ok(swx.exercises[0].exercise_type === 'static', 'workout exercise carries exercise_type');
+  const newSet = await api.workoutExercises.addSet(swx.exercises[0].id);
+  const updated = await api.sets.update(newSet.id, { completed: true, duration_s: 45, weight: null, reps: null });
+  ok(updated.duration_s === 45 && updated.weight == null, 'static stretch logs hold time (duration_s), no weight');
+  const reloaded = await api.workouts.get(sw.id);
+  ok(reloaded!.exercises[0].sets.some((s) => s.duration_s === 45), 'hold time persists on reload');
+  await api.workouts.remove(sw.id);
+
   console.log('3. Workout history');
   const hist = await api.workouts.list(50);
   ok(hist.length === 9, `history has 9 workouts (${hist.length})`);
@@ -288,9 +304,35 @@ async function throws(fn: () => Promise<any>, name: string, match?: RegExp) {
   const foodHits = await api.nutrition.foods.search('chicken');
   ok(foodHits.length > 0 && foodHits.some((f) => /chicken/i.test(f.name)), 'food search finds seeded foods');
   const allFoods = await api.nutrition.foods.search('', 500);
-  ok(allFoods.length >= 80, `seed food library present (${allFoods.length})`);
+  ok(allFoods.length >= 200, `expanded AU + generic food library present (${allFoods.length})`);
+
+  console.log('20a. Nutrition — Australian food library, search & confidence');
+  const top = async (q: string) => (await api.nutrition.foods.search(q, 10));
+  const yopro = await top('YoPro vanilla');
+  ok(yopro[0] && /yopro/i.test(yopro[0].brand) && /vanilla/i.test(yopro[0].name), `"YoPro vanilla" → ${yopro[0]?.brand} ${yopro[0]?.name}`);
+  const colesChicken = await top('Coles chicken breast');
+  ok(colesChicken.some((f) => /coles/i.test(f.brand) && /chicken/i.test(f.name)), 'search "Coles chicken breast" finds the Coles product');
+  const weetbix = await top('Weet-Bix');
+  ok(weetbix.some((f) => /weet-?bix/i.test(f.name)), 'search "Weet-Bix" finds Weet-Bix');
+  const musashi = await top('Musashi protein bar');
+  ok(musashi.some((f) => /musashi/i.test(f.brand) && /bar/i.test(f.name)), 'search "Musashi protein bar" finds a Musashi bar');
+  const flatwhite = await top('large flat white');
+  ok(flatwhite.some((f) => /flat white/i.test(f.name) && /large/i.test(f.name)), 'search "large flat white" finds the large flat white');
+  const aldiYog = await top('Aldi greek yoghurt');
+  ok(aldiYog.some((f) => /aldi/i.test(f.brand) && /greek/i.test(f.name)), 'search "Aldi greek yoghurt" finds an Aldi greek yoghurt');
+  const wraps = await top('Woolworths wraps');
+  ok(wraps.some((f) => /woolworths/i.test(f.brand) && /wrap/i.test(f.name)), 'search "Woolworths wraps" finds a Woolworths wrap (plural handled)');
+  ok((await top('protien')).length > 0, 'typo tolerance: "protien" -> protein foods');
+  ok((await top('chikcen')).some((f) => /chicken/i.test(f.name)), 'typo tolerance: "chikcen" -> chicken');
+  const chickenHit = (await top('chicken'))[0];
+  ok(chickenHit?.kj != null && chickenHit.kj! > 0, 'foods carry a derived kJ energy value');
+  ok(yopro[0] && yopro[0].confidence === 'medium', 'branded AU foods flagged medium confidence (verify against pack)');
+  ok(weetbix[0] && weetbix[0].source === 'au', 'AU library rows carry source=au');
+
   const cf = await api.nutrition.foods.create({ name: 'Test Shake', serving_desc: '1 scoop', kcal: 200, protein: 40, carbs: 5, fat: 2 });
   ok(cf.id > 0 && cf.is_custom === 1, 'create custom food');
+  ok(cf.confidence === 'low' && cf.verified === 0, 'user-created food is low confidence, unverified');
+  ok(cf.kj === Math.round(200 * 4.184), `custom food derives kJ from kcal (${cf.kj})`);
   await throws(() => api.nutrition.foods.create({ name: '   ' }), 'blank food name rejected', /required/);
   const cfUpd = await api.nutrition.foods.update(cf.id, { name: 'Test Shake', serving_desc: '1 scoop', kcal: 210, protein: 41, carbs: 5, fat: 2 });
   ok(cfUpd.kcal === 210, 'edit custom food');

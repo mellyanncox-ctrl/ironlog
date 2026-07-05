@@ -1,6 +1,8 @@
 // Schema + built-in exercise library + settings. Ported from the Node server.
 import { getDb } from './sqlite';
 import { FOOD_SEED } from './foods-seed';
+import { AU_FOODS } from './foods-au';
+import { normalizeFood, dedupeKey, type RawFood } from './foods-normalize';
 import { localISO } from './dates';
 
 export const SCHEMA = `
@@ -10,6 +12,7 @@ CREATE TABLE IF NOT EXISTS exercises (
   muscle TEXT NOT NULL,
   secondary TEXT DEFAULT '',
   equipment TEXT NOT NULL DEFAULT 'other',
+  exercise_type TEXT NOT NULL DEFAULT 'strength',  -- 'strength' | 'dynamic' | 'static'
   is_custom INTEGER NOT NULL DEFAULT 0,
   archived INTEGER NOT NULL DEFAULT 0
 );
@@ -58,6 +61,7 @@ CREATE TABLE IF NOT EXISTS sets (
   set_type TEXT NOT NULL DEFAULT 'working',
   weight REAL,
   reps INTEGER,
+  duration_s INTEGER,          -- hold time in seconds (static/dynamic stretches)
   rpe REAL,
   completed INTEGER NOT NULL DEFAULT 0,
   completed_at TEXT
@@ -121,12 +125,18 @@ CREATE TABLE IF NOT EXISTS foods (
   carbs REAL NOT NULL DEFAULT 0,
   fat REAL NOT NULL DEFAULT 0,
   fibre REAL, sugar REAL, sodium REAL,           -- fibre/sugar in g, sodium in mg
+  kj REAL,                                        -- energy per serving in kJ (AU standard; derivable from kcal)
   barcode TEXT,                                  -- EAN/UPC — enables offline re-scan
   is_custom INTEGER NOT NULL DEFAULT 0,
   favourite INTEGER NOT NULL DEFAULT 0,
   archived INTEGER NOT NULL DEFAULT 0,
-  source TEXT NOT NULL DEFAULT 'seed',
-  created_at TEXT NOT NULL DEFAULT ''
+  source TEXT NOT NULL DEFAULT 'seed',            -- seed | au | off | usda | afcd | barcode | custom
+  source_ref TEXT,                                -- attribution / external id, e.g. 'AFCD', 'OFF:<code>'
+  verified INTEGER NOT NULL DEFAULT 0,            -- 1 = official/manufacturer/API-confirmed
+  confidence TEXT NOT NULL DEFAULT 'medium',      -- verified | high | medium | low (search ranks by this)
+  dedupe_key TEXT,                                -- normalised name|brand|serving for duplicate detection
+  created_at TEXT NOT NULL DEFAULT '',
+  updated_at TEXT
 );
 CREATE TABLE IF NOT EXISTS meals (               -- saved meals + recipes
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -184,6 +194,8 @@ CREATE INDEX IF NOT EXISTS idx_nutrition_date ON nutrition_entries(date);
 CREATE INDEX IF NOT EXISTS idx_meal_items_meal ON meal_items(meal_id);
 CREATE INDEX IF NOT EXISTS idx_foods_name ON foods(name);
 CREATE INDEX IF NOT EXISTS idx_foods_barcode ON foods(barcode);
+CREATE INDEX IF NOT EXISTS idx_foods_brand ON foods(brand);
+CREATE INDEX IF NOT EXISTS idx_foods_dedupe ON foods(dedupe_key);
 `;
 
 export const MEAL_TYPES = ['breakfast', 'lunch', 'dinner', 'snacks'] as const;
@@ -292,6 +304,61 @@ const SEED: [string, string, string, string][] = [
 export const MUSCLES = ['chest', 'back', 'shoulders', 'biceps', 'triceps', 'forearms', 'quads', 'hamstrings', 'glutes', 'calves', 'core'];
 export const EQUIPMENT = ['barbell', 'dumbbell', 'machine', 'cable', 'bodyweight', 'kettlebell', 'band', 'other'];
 
+// Exercise modalities. 'strength' logs weight×reps (the original model);
+// 'dynamic' = dynamic/mobility stretch logged as reps; 'static' = static stretch
+// held for time (logged as a duration in seconds). Stretches carry a null weight,
+// so PRs, volume and e1RM stats — which filter `weight IS NOT NULL` — ignore them.
+export const EXERCISE_TYPES = ['strength', 'dynamic', 'static'] as const;
+export type ExerciseType = typeof EXERCISE_TYPES[number];
+export const EXERCISE_TYPE_LABELS: Record<string, string> = {
+  strength: 'Strength', dynamic: 'Dynamic stretch', static: 'Static stretch',
+};
+
+// Curated warm-up (dynamic) and cool-down (static) stretch library. Muscles are
+// mapped onto the existing MUSCLES taxonomy (e.g. hip flexors → quads,
+// adductors → glutes) so filters, colours and stats need no new categories.
+// Tuple: [name, muscle, secondary, equipment, type]
+const STRETCH_SEED: [string, string, string, string, ExerciseType][] = [
+  // ── Dynamic (warm-up) ──────────────────────────────────────────────
+  ['Arm Circles', 'shoulders', '', 'bodyweight', 'dynamic'],
+  ['Band Shoulder Dislocate', 'shoulders', 'chest', 'band', 'dynamic'],
+  ['Leg Swings (Front-to-Back)', 'hamstrings', 'glutes', 'bodyweight', 'dynamic'],
+  ['Leg Swings (Side-to-Side)', 'glutes', 'quads', 'bodyweight', 'dynamic'],
+  ['Walking Knee Hug', 'glutes', 'hamstrings', 'bodyweight', 'dynamic'],
+  ['Walking Quad Pull', 'quads', '', 'bodyweight', 'dynamic'],
+  ['Hip Circles', 'glutes', 'core', 'bodyweight', 'dynamic'],
+  ['Cat-Cow', 'back', 'core', 'bodyweight', 'dynamic'],
+  ['Spiderman Lunge', 'glutes', 'quads,hamstrings', 'bodyweight', 'dynamic'],
+  ["World's Greatest Stretch", 'hamstrings', 'glutes,back,shoulders', 'bodyweight', 'dynamic'],
+  ['Inchworm', 'hamstrings', 'shoulders,core', 'bodyweight', 'dynamic'],
+  ['Standing Torso Twist', 'core', 'back', 'bodyweight', 'dynamic'],
+  ['Lunge with Twist', 'quads', 'glutes,core', 'bodyweight', 'dynamic'],
+  ['High Knees', 'quads', 'calves,core', 'bodyweight', 'dynamic'],
+  ['Butt Kicks', 'hamstrings', 'quads', 'bodyweight', 'dynamic'],
+  ['Ankle Circles', 'calves', '', 'bodyweight', 'dynamic'],
+  // ── Static (cool-down) ─────────────────────────────────────────────
+  ['Standing Quad Stretch', 'quads', '', 'bodyweight', 'static'],
+  ['Kneeling Hip Flexor Stretch', 'quads', 'glutes', 'bodyweight', 'static'],
+  ['Seated Hamstring Stretch', 'hamstrings', 'calves', 'bodyweight', 'static'],
+  ['Standing Forward Fold', 'hamstrings', 'back', 'bodyweight', 'static'],
+  ['Standing Calf Stretch', 'calves', '', 'bodyweight', 'static'],
+  ['Downward Dog', 'calves', 'hamstrings,shoulders', 'bodyweight', 'static'],
+  ['Figure-Four Glute Stretch', 'glutes', '', 'bodyweight', 'static'],
+  ['Pigeon Pose', 'glutes', 'quads', 'bodyweight', 'static'],
+  ['Butterfly Stretch', 'glutes', 'quads', 'bodyweight', 'static'],
+  ['Frog Stretch', 'glutes', 'quads', 'bodyweight', 'static'],
+  ["Child's Pose", 'back', 'shoulders', 'bodyweight', 'static'],
+  ['Seated Spinal Twist', 'back', 'glutes', 'bodyweight', 'static'],
+  ['Overhead Lat Stretch', 'back', 'shoulders', 'bodyweight', 'static'],
+  ['Cobra Stretch', 'core', 'back', 'bodyweight', 'static'],
+  ['Doorway Chest Stretch', 'chest', 'shoulders', 'bodyweight', 'static'],
+  ['Cross-Body Shoulder Stretch', 'shoulders', '', 'bodyweight', 'static'],
+  ['Overhead Triceps Stretch', 'triceps', 'shoulders', 'bodyweight', 'static'],
+  ['Biceps Wall Stretch', 'biceps', 'chest', 'bodyweight', 'static'],
+  ['Wrist Flexor Stretch', 'forearms', '', 'bodyweight', 'static'],
+  ['Neck Side Stretch', 'shoulders', '', 'bodyweight', 'static'],
+];
+
 export function migrate(): void {
   const db = getDb();
   db.exec('PRAGMA foreign_keys = ON;');
@@ -299,29 +366,89 @@ export function migrate(): void {
   // additive migrations for databases created before these columns existed
   try { db.exec('ALTER TABLE garmin_activities ADD COLUMN distance_m INTEGER'); } catch { /* already there */ }
   try { db.exec('ALTER TABLE foods ADD COLUMN barcode TEXT'); } catch { /* already there / table new */ }
+  // Food-library expansion (July 2026): energy in kJ, source attribution + a
+  // verification/confidence system, and a dedupe key. All additive — existing
+  // rows keep working and default to medium confidence.
+  for (const col of [
+    'kj REAL',
+    "source_ref TEXT",
+    'verified INTEGER NOT NULL DEFAULT 0',
+    "confidence TEXT NOT NULL DEFAULT 'medium'",
+    'dedupe_key TEXT',
+    'updated_at TEXT',
+  ]) {
+    try { db.exec(`ALTER TABLE foods ADD COLUMN ${col}`); } catch { /* already there / table new */ }
+  }
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_foods_brand ON foods(brand)'); } catch { /* noop */ }
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_foods_dedupe ON foods(dedupe_key)'); } catch { /* noop */ }
+  try { db.exec("ALTER TABLE exercises ADD COLUMN exercise_type TEXT NOT NULL DEFAULT 'strength'"); } catch { /* already there */ }
+  try { db.exec('ALTER TABLE sets ADD COLUMN duration_s INTEGER'); } catch { /* already there */ }
   const n = db.prepare('SELECT COUNT(*) AS n FROM exercises').get()!.n as number;
   if (n === 0) {
     const ins = db.prepare('INSERT INTO exercises (name, muscle, secondary, equipment) VALUES (?, ?, ?, ?)');
     for (const [name, muscle, secondary, equipment] of SEED) ins.run(name, muscle, secondary, equipment);
   }
+  seedStretches();
+  backfillFoods();
   seedFoods();
 }
 
-// Seed the built-in food library once. Idempotent: only runs when no seed foods
-// exist, so a user's custom foods and diary are never touched. Runs on every
-// migrate() (incl. after importing an older backup) so libraries stay populated.
+// Seed the built-in stretch library once. Idempotent: only inserts when no
+// stretches exist yet, so existing databases (which already have the 90 strength
+// seeds) still pick up stretches on their next migrate(), and custom exercises
+// are never touched. Uses INSERT OR IGNORE so a name that collides with a
+// user's custom exercise is skipped rather than throwing.
+export function seedStretches(): void {
+  const db = getDb();
+  const have = db.prepare("SELECT COUNT(*) AS n FROM exercises WHERE exercise_type IN ('dynamic','static')").get()!.n as number;
+  if (have > 0) return;
+  const ins = db.prepare('INSERT OR IGNORE INTO exercises (name, muscle, secondary, equipment, exercise_type) VALUES (?, ?, ?, ?, ?)');
+  for (const [name, muscle, secondary, equipment, type] of STRETCH_SEED) ins.run(name, muscle, secondary, equipment, type);
+}
+
+// Insert one normalised food. Skips when an active food already shares its
+// dedupe_key, so re-running migrate (or seeding the AU set onto an existing
+// library) never creates duplicates. Returns 1 if inserted, 0 if skipped.
+function insertFood(db: any, raw: RawFood, now: string): 0 | 1 {
+  const f = normalizeFood(raw);
+  const dup = db.prepare('SELECT 1 FROM foods WHERE dedupe_key = ? AND archived = 0 LIMIT 1').get(f.dedupe_key);
+  if (dup) return 0;
+  db.prepare(`INSERT INTO foods
+    (name, brand, serving_desc, serving_grams, kcal, kj, protein, carbs, fat, fibre, sugar, sodium,
+     source, source_ref, verified, confidence, dedupe_key, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+    f.name, f.brand, f.serving_desc, f.serving_grams, f.kcal, f.kj, f.protein, f.carbs, f.fat,
+    f.fibre, f.sugar, f.sodium, f.source, f.source_ref, f.verified, f.confidence, f.dedupe_key, now, now);
+  return 1;
+}
+
+// Seed the built-in food library. Idempotent PER SOURCE: the British generic
+// seed and the Australian library seed independently, each guarded by a count,
+// so (a) a user's custom foods and diary are never touched, and (b) existing
+// users who already have the British seed still receive the new AU library on
+// their next migrate(). Duplicates are prevented by dedupe_key in insertFood().
 export function seedFoods(): void {
   const db = getDb();
-  const have = db.prepare("SELECT COUNT(*) AS n FROM foods WHERE source = 'seed'").get()!.n as number;
-  if (have > 0) return;
   const now = localISO();
-  const ins = db.prepare(`INSERT INTO foods
-    (name, brand, serving_desc, serving_grams, kcal, protein, carbs, fat, fibre, sugar, sodium, source, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'seed', ?)`);
-  for (const f of FOOD_SEED) {
-    ins.run(f.name, f.brand ?? '', f.serving, f.grams ?? null, f.kcal, f.protein, f.carbs, f.fat,
-      f.fibre ?? null, f.sugar ?? null, f.sodium ?? null, now);
+  const haveSeed = db.prepare("SELECT COUNT(*) AS n FROM foods WHERE source = 'seed'").get()!.n as number;
+  if (haveSeed === 0) {
+    for (const f of FOOD_SEED) insertFood(db, { ...(f as any), source: 'seed', confidence: 'high' }, now);
   }
+  const haveAu = db.prepare("SELECT COUNT(*) AS n FROM foods WHERE source = 'au'").get()!.n as number;
+  if (haveAu === 0) {
+    for (const f of AU_FOODS) insertFood(db, f, now);
+  }
+}
+
+// Backfill rows created before the kj/confidence/dedupe_key columns existed so
+// old libraries rank and de-duplicate like fresh ones. Runs before seedFoods so
+// dedupe_key is populated when the AU set checks for duplicates.
+export function backfillFoods(): void {
+  const db = getDb();
+  db.prepare('UPDATE foods SET kj = ROUND(kcal * 4.184) WHERE kj IS NULL AND kcal IS NOT NULL').run();
+  const rows = db.prepare("SELECT id, name, brand, serving_desc FROM foods WHERE dedupe_key IS NULL OR dedupe_key = ''").all() as any[];
+  const upd = db.prepare('UPDATE foods SET dedupe_key = ? WHERE id = ?');
+  for (const r of rows) upd.run(dedupeKey(r.name, r.brand || '', r.serving_desc || ''), r.id);
 }
 
 export function getSetting(key: string, fallback: string): string {

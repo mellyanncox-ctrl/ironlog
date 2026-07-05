@@ -161,5 +161,5 @@ export function lastSets(exercise_id: number | string) {
     ORDER BY w.started_at DESC LIMIT 1
   `).get(Number(exercise_id));
   if (!row) return [];
-  return db.prepare('SELECT set_type, weight, reps, rpe FROM sets WHERE workout_exercise_id = ? AND completed = 1 ORDER BY position').all(row.id);
+  return db.prepare('SELECT set_type, weight, reps, duration_s, rpe FROM sets WHERE workout_exercise_id = ? AND completed = 1 ORDER BY position').all(row.id);
 }

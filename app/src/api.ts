@@ -2,7 +2,7 @@
 // Same surface as the old HTTP client, so screens are unchanged.
 import { initDb, getDb, withTx, exportBytes, importBytes, flush, type Storage } from './db/sqlite';
 import { IdbPhotoStore, MemoryPhotoStore, newPhotoKey, type PhotoStore } from './db/photos';
-import { migrate, getSetting, setSetting, allSettings, MUSCLES, EQUIPMENT, MEAL_TYPES } from './db/schema';
+import { migrate, getSetting, setSetting, allSettings, MUSCLES, EQUIPMENT, MEAL_TYPES, EXERCISE_TYPES } from './db/schema';
 import * as stats from './db/stats';
 import * as nutri from './db/nutrition';
 import * as reportsMod from './db/reports';
@@ -12,25 +12,27 @@ import { fetchSyncSnapshot, REPO_RE, type SyncOutcome } from './lib/remoteSync';
 import { pushBackup, pullBackup, REPO_RE as BACKUP_REPO_RE } from './lib/cloudBackup';
 import { matchStrongExercise, type StrongWorkout } from './lib/strongParse';
 import { fetchOpenFoodFacts, normalizeBarcode, type FoodDraft } from './lib/openfoodfacts';
+import { kjFromKcal, dedupeKey } from './db/foods-normalize';
+import { rankFoods, prefilterSql } from './db/foods-search';
 import { seed as seedDemo } from './db/seed-demo';
 import { localISO, localDate } from './db/dates';
 
 // ---------- types (unchanged) ----------
 export type Exercise = {
   id: number; name: string; muscle: string; secondary: string;
-  equipment: string; is_custom: number; archived: number;
+  equipment: string; exercise_type: string; is_custom: number; archived: number;
 };
 export type SetRow = {
   id: number; workout_exercise_id: number; position: number;
   set_type: 'warmup' | 'working' | 'dropset' | 'failure';
-  weight: number | null; reps: number | null; rpe: number | null;
+  weight: number | null; reps: number | null; duration_s: number | null; rpe: number | null;
   completed: number; completed_at: string | null;
 };
 export type WorkoutExercise = {
   id: number; workout_id: number; exercise_id: number; position: number;
   superset_group: number | null; rest_seconds: number; notes: string;
-  exercise_name: string; muscle: string; equipment: string;
-  sets: SetRow[]; previous: { set_type: string; weight: number; reps: number; rpe: number | null }[];
+  exercise_name: string; muscle: string; equipment: string; exercise_type: string;
+  sets: SetRow[]; previous: { set_type: string; weight: number; reps: number; duration_s: number | null; rpe: number | null }[];
 };
 export type Workout = {
   id: number; name: string; template_id: number | null;
@@ -45,7 +47,7 @@ export type TemplateExercise = {
   id: number; template_id: number; exercise_id: number; position: number;
   superset_group: number | null; target_sets: number; target_reps: string;
   target_weight: number | null; rest_seconds: number; notes: string;
-  exercise_name: string; muscle: string; equipment: string;
+  exercise_name: string; muscle: string; equipment: string; exercise_type: string;
 };
 export type Template = {
   id: number; name: string; day_of_week: number | null; position: number;
@@ -91,9 +93,12 @@ export type Suggestions = {
 // ---------- nutrition types ----------
 export type Food = {
   id: number; name: string; brand: string; serving_desc: string; serving_grams: number | null;
-  kcal: number; protein: number; carbs: number; fat: number;
+  kcal: number; kj: number | null; protein: number; carbs: number; fat: number;
   fibre: number | null; sugar: number | null; sodium: number | null; barcode: string | null;
-  is_custom: number; favourite: number; archived: number; source: string; created_at: string;
+  is_custom: number; favourite: number; archived: number;
+  source: string; source_ref: string | null;
+  verified: number; confidence: 'verified' | 'high' | 'medium' | 'low';
+  dedupe_key: string | null; created_at: string; updated_at: string | null;
 };
 export type BarcodeLookup =
   | { source: 'local'; food: Food }
@@ -136,9 +141,9 @@ export type NutritionInsight = nutri.Insight;
 export type ExerciseStats = {
   trend: { day: string; e1rm: number }[];
   volume: { bucket: string; volume: number; sets: number }[];
-  history: { workout_id: number; started_at: string; set_type: string; weight: number; reps: number; rpe: number | null }[];
+  history: { workout_id: number; started_at: string; set_type: string; weight: number; reps: number; duration_s: number | null; rpe: number | null }[];
   pr: PRRow | null;
-  last_sets: { set_type: string; weight: number; reps: number; rpe: number | null }[];
+  last_sets: { set_type: string; weight: number; reps: number; duration_s: number | null; rpe: number | null }[];
 };
 
 // ---------- init ----------
@@ -202,7 +207,7 @@ function fullWorkout(id: number): Workout | null {
   const w = db.prepare('SELECT * FROM workouts WHERE id = ?').get(id);
   if (!w) return null;
   const exercises = db.prepare(`
-    SELECT we.*, e.name AS exercise_name, e.muscle, e.equipment
+    SELECT we.*, e.name AS exercise_name, e.muscle, e.equipment, e.exercise_type
     FROM workout_exercises we JOIN exercises e ON e.id = we.exercise_id
     WHERE we.workout_id = ? ORDER BY we.position
   `).all(id);
@@ -218,7 +223,7 @@ function fullTemplate(id: number): Template | null {
   const t = db.prepare('SELECT * FROM templates WHERE id = ?').get(id);
   if (!t) return null;
   (t as any).exercises = db.prepare(`
-    SELECT te.*, e.name AS exercise_name, e.muscle, e.equipment
+    SELECT te.*, e.name AS exercise_name, e.muscle, e.equipment, e.exercise_type
     FROM template_exercises te JOIN exercises e ON e.id = te.exercise_id
     WHERE te.template_id = ? ORDER BY te.position
   `).all(id);
@@ -284,12 +289,16 @@ function reqDate(v: any): string {
 }
 // Normalize any food-shaped input into stored per-serving nutrition.
 function foodInput(e: any) {
+  const name = reqName(e.name, 'Food');
+  const brand = String(e.brand || '').slice(0, 80);
+  const serving_desc = String(e.serving_desc || 'serving').trim().slice(0, 60) || 'serving';
+  const kcal = nn(e.kcal, 0, 10000);
+  // kJ is the AU-standard energy: accept it if given, else derive from kcal.
+  const kj = e.kj != null && Number.isFinite(Number(e.kj)) ? Math.round(Number(e.kj)) : kjFromKcal(kcal);
   return {
-    name: reqName(e.name, 'Food'),
-    brand: String(e.brand || '').slice(0, 80),
-    serving_desc: String(e.serving_desc || 'serving').trim().slice(0, 60) || 'serving',
+    name, brand, serving_desc,
     serving_grams: nnOrNull(e.serving_grams, 0, 5000),
-    kcal: nn(e.kcal, 0, 10000),
+    kcal, kj,
     protein: nn(e.protein, 0, 1000),
     carbs: nn(e.carbs, 0, 1000),
     fat: nn(e.fat, 0, 1000),
@@ -297,6 +306,7 @@ function foodInput(e: any) {
     sugar: nnOrNull(e.sugar, 0, 1000),
     sodium: nnOrNull(e.sodium, 0, 100000),
     barcode: e.barcode !== undefined ? normalizeBarcode(e.barcode) : undefined,
+    dedupe_key: dedupeKey(name, brand, serving_desc),
   };
 }
 function getFood(id: number): Food {
@@ -348,8 +358,9 @@ export const api = {
       const name = reqName(e.name, 'Exercise');
       const dup = getDb().prepare('SELECT id FROM exercises WHERE name = ? COLLATE NOCASE').get(name);
       if (dup) throw new UserError(`“${name}” already exists in your library`);
-      const info = getDb().prepare('INSERT INTO exercises (name, muscle, secondary, equipment, is_custom) VALUES (?, ?, ?, ?, 1)')
-        .run(name, e.muscle || 'other', e.secondary || '', e.equipment || 'other');
+      const type = EXERCISE_TYPES.includes(e.exercise_type as any) ? e.exercise_type : 'strength';
+      const info = getDb().prepare('INSERT INTO exercises (name, muscle, secondary, equipment, exercise_type, is_custom) VALUES (?, ?, ?, ?, ?, 1)')
+        .run(name, e.muscle || 'other', e.secondary || '', e.equipment || 'other', type);
       return getDb().prepare('SELECT * FROM exercises WHERE id = ?').get(info.lastInsertRowid) as Exercise;
     },
     update: async (id: number, e: Partial<Exercise>): Promise<Exercise> => {
@@ -359,8 +370,9 @@ export const api = {
         const dup = getDb().prepare('SELECT id FROM exercises WHERE name = ? COLLATE NOCASE AND id != ?').get(name, id);
         if (dup) throw new UserError(`“${name}” already exists in your library`);
       }
-      getDb().prepare('UPDATE exercises SET name = COALESCE(?, name), muscle = COALESCE(?, muscle), secondary = COALESCE(?, secondary), equipment = COALESCE(?, equipment) WHERE id = ?')
-        .run(e.name != null ? String(e.name).trim() : null, e.muscle ?? null, e.secondary ?? null, e.equipment ?? null, id);
+      const type = EXERCISE_TYPES.includes(e.exercise_type as any) ? e.exercise_type : null;
+      getDb().prepare('UPDATE exercises SET name = COALESCE(?, name), muscle = COALESCE(?, muscle), secondary = COALESCE(?, secondary), equipment = COALESCE(?, equipment), exercise_type = COALESCE(?, exercise_type) WHERE id = ?')
+        .run(e.name != null ? String(e.name).trim() : null, e.muscle ?? null, e.secondary ?? null, e.equipment ?? null, type, id);
       return getDb().prepare('SELECT * FROM exercises WHERE id = ?').get(id) as Exercise;
     },
     remove: async (id: number) => {
@@ -377,7 +389,7 @@ export const api = {
       const trend = stats.e1rmTrend(id);
       const volume = stats.volumeSeries({ bucket: 'week', exercise_id: id });
       const history = getDb().prepare(`
-        SELECT w.id AS workout_id, w.started_at, s.set_type, s.weight, s.reps, s.rpe
+        SELECT w.id AS workout_id, w.started_at, s.set_type, s.weight, s.reps, s.duration_s, s.rpe
         FROM sets s JOIN workout_exercises we ON we.id = s.workout_exercise_id
         JOIN workouts w ON w.id = we.workout_id
         WHERE we.exercise_id = ? AND s.completed = 1 AND w.ended_at IS NOT NULL
@@ -552,8 +564,8 @@ export const api = {
       const db = getDb();
       const last = db.prepare('SELECT * FROM sets WHERE workout_exercise_id = ? ORDER BY position DESC LIMIT 1').get(id);
       const pos = last ? (last.position as number) + 1 : 0;
-      const sid = db.prepare('INSERT INTO sets (workout_exercise_id, position, set_type, weight, reps) VALUES (?, ?, ?, ?, ?)')
-        .run(id, pos, last ? (last.set_type === 'warmup' ? 'working' : last.set_type) : 'working', last ? last.weight : null, last ? last.reps : null).lastInsertRowid;
+      const sid = db.prepare('INSERT INTO sets (workout_exercise_id, position, set_type, weight, reps, duration_s) VALUES (?, ?, ?, ?, ?, ?)')
+        .run(id, pos, last ? (last.set_type === 'warmup' ? 'working' : last.set_type) : 'working', last ? last.weight : null, last ? last.reps : null, last ? last.duration_s : null).lastInsertRowid;
       return db.prepare('SELECT * FROM sets WHERE id = ?').get(sid) as SetRow;
     },
   },
@@ -566,10 +578,11 @@ export const api = {
       if (!cur) throw new UserError('Set not found');
       const completed = body.completed !== undefined ? (body.completed ? 1 : 0) : (cur.completed as number);
       const setType = body.set_type != null && ['warmup', 'working', 'dropset', 'failure'].includes(body.set_type) ? body.set_type : null;
-      db.prepare('UPDATE sets SET set_type = COALESCE(?, set_type), weight = ?, reps = ?, rpe = ?, completed = ?, completed_at = ? WHERE id = ?')
+      db.prepare('UPDATE sets SET set_type = COALESCE(?, set_type), weight = ?, reps = ?, duration_s = ?, rpe = ?, completed = ?, completed_at = ? WHERE id = ?')
         .run(setType,
           body.weight !== undefined ? numOrNull(body.weight, 0, 2000) : cur.weight,
           body.reps !== undefined ? (numOrNull(body.reps, 0, 1000) != null ? Math.round(numOrNull(body.reps, 0, 1000)!) : null) : cur.reps,
+          body.duration_s !== undefined ? (numOrNull(body.duration_s, 0, 36000) != null ? Math.round(numOrNull(body.duration_s, 0, 36000)!) : null) : cur.duration_s,
           body.rpe !== undefined ? numOrNull(body.rpe, 1, 10) : cur.rpe,
           completed, completed ? (cur.completed_at || localISO()) : null, id);
       return db.prepare('SELECT * FROM sets WHERE id = ?').get(id) as SetRow;
@@ -740,15 +753,24 @@ export const api = {
         await ok();
         const term = String(q || '').trim();
         if (!term) {
-          // no query → favourites first, then recently used, then alphabetical
-          return getDb().prepare('SELECT * FROM foods WHERE archived = 0 ORDER BY favourite DESC, name LIMIT ?').all(limit) as Food[];
+          // no query → favourites, then verified/high-confidence, then alphabetical
+          return getDb().prepare(`
+            SELECT * FROM foods WHERE archived = 0
+            ORDER BY favourite DESC,
+              CASE confidence WHEN 'verified' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
+              name LIMIT ?`).all(limit) as Food[];
         }
-        const like = `%${term.replace(/[%_]/g, '')}%`;
-        const starts = `${term.replace(/[%_]/g, '')}%`;
-        return getDb().prepare(`
-          SELECT * FROM foods WHERE archived = 0 AND (name LIKE ? OR brand LIKE ?)
-          ORDER BY favourite DESC, (name LIKE ?) DESC, is_custom DESC, name LIMIT ?
-        `).all(like, like, starts, limit) as Food[];
+        // Broad SQL prefilter → precise JS ranking (multi-token, brand aliases,
+        // typo tolerance, confidence/favourite weighting). See db/foods-search.ts.
+        const { where, params } = prefilterSql(term);
+        const candidates = getDb().prepare(`SELECT * FROM foods WHERE ${where} LIMIT 600`).all(...params) as Food[];
+        const ranked = rankFoods(candidates as any, term, limit) as unknown as Food[];
+        // Fallback: if the prefilter was too tight (rare typo cases), rank a wider set.
+        if (ranked.length === 0) {
+          const wide = getDb().prepare('SELECT * FROM foods WHERE archived = 0 LIMIT 2000').all() as Food[];
+          return rankFoods(wide as any, term, limit) as unknown as Food[];
+        }
+        return ranked;
       },
       recent: async (limit = 25): Promise<Food[]> => { await ok(); return nutri.recentFoods(limit) as Food[]; },
       favourites: async (): Promise<Food[]> => { await ok(); return getDb().prepare('SELECT * FROM foods WHERE archived = 0 AND favourite = 1 ORDER BY name').all() as Food[]; },
@@ -757,22 +779,31 @@ export const api = {
       create: async (e: any): Promise<Food> => {
         await ok();
         const f = foodInput(e);
-        const id = getDb().prepare(`INSERT INTO foods (name, brand, serving_desc, serving_grams, kcal, protein, carbs, fat, fibre, sugar, sodium, barcode, is_custom, favourite, source, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`)
-          .run(f.name, f.brand, f.serving_desc, f.serving_grams, f.kcal, f.protein, f.carbs, f.fat, f.fibre, f.sugar, f.sodium, f.barcode ?? null, e.favourite ? 1 : 0, e.barcode ? 'barcode' : 'custom', localISO()).lastInsertRowid;
+        // Confidence tier: a barcode-matched food (saved from Open Food Facts or a
+        // scanned code) is 'high'; a plain user-entered food is 'low'. Never
+        // 'verified' — that is reserved for official/manufacturer/API sources.
+        const fromBarcode = !!e.barcode;
+        const source = e.source ? String(e.source) : (fromBarcode ? 'barcode' : 'custom');
+        const confidence = e.confidence ? String(e.confidence) : (fromBarcode ? 'high' : 'low');
+        const source_ref = e.source_ref ? String(e.source_ref).slice(0, 120) : (fromBarcode && f.barcode ? `OFF:${f.barcode}` : null);
+        const now = localISO();
+        const id = getDb().prepare(`INSERT INTO foods (name, brand, serving_desc, serving_grams, kcal, kj, protein, carbs, fat, fibre, sugar, sodium, barcode, is_custom, favourite, source, source_ref, verified, confidence, dedupe_key, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 0, ?, ?, ?, ?)`)
+          .run(f.name, f.brand, f.serving_desc, f.serving_grams, f.kcal, f.kj, f.protein, f.carbs, f.fat, f.fibre, f.sugar, f.sodium, f.barcode ?? null, e.favourite ? 1 : 0, source, source_ref, confidence, f.dedupe_key, now, now).lastInsertRowid;
         await flush();
         return getFood(id as number);
       },
       update: async (id: number, e: any): Promise<Food> => {
         await ok();
         const f = foodInput(e);
+        const now = localISO();
         // only touch barcode when the caller supplied one, so edits don't wipe it
         if (f.barcode !== undefined) {
-          getDb().prepare(`UPDATE foods SET name=?, brand=?, serving_desc=?, serving_grams=?, kcal=?, protein=?, carbs=?, fat=?, fibre=?, sugar=?, sodium=?, barcode=? WHERE id=?`)
-            .run(f.name, f.brand, f.serving_desc, f.serving_grams, f.kcal, f.protein, f.carbs, f.fat, f.fibre, f.sugar, f.sodium, f.barcode ?? null, id);
+          getDb().prepare(`UPDATE foods SET name=?, brand=?, serving_desc=?, serving_grams=?, kcal=?, kj=?, protein=?, carbs=?, fat=?, fibre=?, sugar=?, sodium=?, barcode=?, dedupe_key=?, updated_at=? WHERE id=?`)
+            .run(f.name, f.brand, f.serving_desc, f.serving_grams, f.kcal, f.kj, f.protein, f.carbs, f.fat, f.fibre, f.sugar, f.sodium, f.barcode ?? null, f.dedupe_key, now, id);
         } else {
-          getDb().prepare(`UPDATE foods SET name=?, brand=?, serving_desc=?, serving_grams=?, kcal=?, protein=?, carbs=?, fat=?, fibre=?, sugar=?, sodium=? WHERE id=?`)
-            .run(f.name, f.brand, f.serving_desc, f.serving_grams, f.kcal, f.protein, f.carbs, f.fat, f.fibre, f.sugar, f.sodium, id);
+          getDb().prepare(`UPDATE foods SET name=?, brand=?, serving_desc=?, serving_grams=?, kcal=?, kj=?, protein=?, carbs=?, fat=?, fibre=?, sugar=?, sodium=?, dedupe_key=?, updated_at=? WHERE id=?`)
+            .run(f.name, f.brand, f.serving_desc, f.serving_grams, f.kcal, f.kj, f.protein, f.carbs, f.fat, f.fibre, f.sugar, f.sodium, f.dedupe_key, now, id);
         }
         await flush();
         return getFood(Number(id));
