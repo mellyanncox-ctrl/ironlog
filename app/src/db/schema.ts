@@ -194,9 +194,11 @@ CREATE INDEX IF NOT EXISTS idx_nutrition_date ON nutrition_entries(date);
 CREATE INDEX IF NOT EXISTS idx_meal_items_meal ON meal_items(meal_id);
 CREATE INDEX IF NOT EXISTS idx_foods_name ON foods(name);
 CREATE INDEX IF NOT EXISTS idx_foods_barcode ON foods(barcode);
-CREATE INDEX IF NOT EXISTS idx_foods_brand ON foods(brand);
-CREATE INDEX IF NOT EXISTS idx_foods_dedupe ON foods(dedupe_key);
 `;
+// NOTE: indexes on foods(brand) and foods(dedupe_key) are created in migrate()
+// AFTER the ALTER TABLE that adds those columns — never here in SCHEMA, because
+// on an EXISTING database this string runs before the ALTERs and an index on a
+// not-yet-added column would throw and abort startup.
 
 export const MEAL_TYPES = ['breakfast', 'lunch', 'dinner', 'snacks'] as const;
 export const ACTIVITY_LEVELS: [string, string, number][] = [

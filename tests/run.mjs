@@ -9,7 +9,7 @@ const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 // bundles must live inside the project so external requires (sql.js, jsdom) resolve
 const out = path.join(root, 'tests', '.build');
 mkdirSync(out, { recursive: true });
-const suites = ['data-layer.test.ts', 'ui-smoke.test.tsx'];
+const suites = ['data-layer.test.ts', 'migration.test.ts', 'ui-smoke.test.tsx'];
 let failed = false;
 
 for (const suite of suites) {
