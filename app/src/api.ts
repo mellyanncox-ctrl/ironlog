@@ -1192,10 +1192,10 @@ export const api = {
       const magic = new TextDecoder().decode(head.slice(0, 8));
       if (magic === 'IRONLOG2') {
         const indexLen = new DataView(head.buffer).getUint32(8, true);
-        if (indexLen > 10_000_000) throw new UserError('Not an Ironlog backup file');
+        if (indexLen > 10_000_000) throw new UserError('Not a STRONG backup file');
         let index: any;
         try { index = JSON.parse(new TextDecoder().decode(await blob.slice(12, 12 + indexLen).arrayBuffer())); }
-        catch { throw new UserError('Not an Ironlog backup file'); }
+        catch { throw new UserError('Not a STRONG backup file'); }
         const dbStart = 12 + indexLen;
         const dbBytes = new Uint8Array(await blob.slice(dbStart, dbStart + index.db_len).arrayBuffer());
         await importBytes(dbBytes); // validates it's an Ironlog SQLite db

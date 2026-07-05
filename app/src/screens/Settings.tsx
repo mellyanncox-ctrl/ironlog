@@ -102,7 +102,7 @@ export function SettingsScreen({ settings, onChange }: { settings: Settings; onC
         <p className="text-[12.5px] text-mut leading-relaxed mb-3">
           All data lives on this device. Export a backup file regularly — if the app is deleted
           or the browser clears its storage, the backup is the only way to get your history back.
-          Backups include your progress photos and restore on any device running Ironlog.
+          Backups include your progress photos and restore on any device running STRONG.
         </p>
         <div className="flex gap-2">
           <Button small kind="ghost" disabled={busy} onClick={exportBackup}>Export backup</Button>
@@ -220,7 +220,7 @@ function CloudBackupCard() {
           <p className="text-[12.5px] text-mut leading-relaxed mb-3">
             Create a <span className="font-medium">private</span> GitHub repo (e.g. <span className="font-medium">you/ironlog-backup</span>) and a
             fine-grained token with <span className="font-medium">Contents: read &amp; write</span> on just that repo. Both stay on this device.
-            To recover on a new phone, install Ironlog, enter the same repo and token here, and tap Restore.
+            To recover on a new phone, install STRONG, enter the same repo and token here, and tap Restore.
           </p>
           <Field label="Backup repo (owner/repo)">
             <TextInput value={repo} onChange={(e) => setRepo(e.target.value)} placeholder="you/ironlog-backup" autoCapitalize="none" autoCorrect="off" />

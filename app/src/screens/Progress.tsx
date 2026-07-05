@@ -124,7 +124,7 @@ function Coach({ onNav }: { onNav: (r: string) => void }) {
   useEffect(() => { api.suggestions().then(setS); }, []);
   if (!s) return <Spinner />;
   const empty = !s.improving.length && !s.stalled.length && !s.neglected.length && !s.fatigue.length && !s.deload && !s.next_weights.length;
-  if (empty) return <Empty icon="🧠" title="Not enough data yet" sub="Log a few weeks of workouts and Ironlog will surface what's improving, what's stalled, and what to do next." />;
+  if (empty) return <Empty icon="🧠" title="Not enough data yet" sub="Log a few weeks of workouts and STRONG will surface what's improving, what's stalled, and what to do next." />;
 
   return (
     <div className="space-y-3">

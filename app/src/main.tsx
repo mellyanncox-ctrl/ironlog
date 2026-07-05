@@ -28,7 +28,7 @@ initData({ wasmUrl }).then(
       <div style={{ minHeight: '100dvh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
         <div style={{ textAlign: 'center', maxWidth: 420 }}>
           <div style={{ fontSize: 40, marginBottom: 12 }}>⚠️</div>
-          <div style={{ fontSize: 17, fontWeight: 600, marginBottom: 8 }}>Ironlog couldn't start</div>
+          <div style={{ fontSize: 17, fontWeight: 600, marginBottom: 8 }}>STRONG couldn't start</div>
           <div style={{ fontSize: 13, color: '#8e8e96', lineHeight: 1.5 }}>
             {String(err?.message || err)}. Try closing and reopening the app.
             If this keeps happening, your browser may be blocking storage (private browsing mode?).

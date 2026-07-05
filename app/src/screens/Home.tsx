@@ -153,7 +153,7 @@ export function Home({ onStartTemplate, onStartBlank, onResume, activeId, onNav 
       {ov && ov.total_workouts === 0 && !activeId && (
         <Card className="p-5 text-center">
           <div className="text-3xl mb-2">🏋️</div>
-          <div className="text-[16px] font-semibold mb-1">Welcome to Ironlog</div>
+          <div className="text-[16px] font-semibold mb-1">Welcome to STRONG</div>
           <div className="text-[13px] text-mut mb-4">Start a blank workout, build a routine, or load sample data to explore.</div>
           <div className="flex gap-2 justify-center">
             <Button small kind="ghost" onClick={async () => { await api.demoSeed(); location.reload(); }}>Load sample data</Button>

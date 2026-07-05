@@ -36,7 +36,7 @@ const TABS = [
 ];
 
 const TITLES: Record<string, string> = {
-  '': 'Ironlog', food: 'Nutrition', history: 'History', routines: 'Routines', progress: 'Progress',
+  '': 'STRONG', food: 'Nutrition', history: 'History', routines: 'Routines', progress: 'Progress',
   library: 'Exercises', reports: 'Reports', garmin: 'Garmin', runs: 'Runs',
   activity: 'Activity', photos: 'Progress photos', settings: 'Settings', more: 'More',
 };
@@ -93,14 +93,14 @@ export default function App() {
     nav(''); // refresh home
   }
 
-  const title = TITLES[base] ?? 'Ironlog';
+  const title = TITLES[base] ?? 'STRONG';
 
   return (
     <div className="min-h-dvh max-w-lg mx-auto pb-[calc(env(safe-area-inset-bottom)+84px)]">
       {/* header */}
       <header className="sticky top-0 z-30 bg-bg/85 backdrop-blur border-b border-edge/60 px-4 pt-[calc(env(safe-area-inset-top)+14px)] pb-3 flex items-center justify-between">
         <h1 className="text-[21px] font-bold tracking-tight">
-          {base === '' ? <><span className="text-accent">Iron</span>log</> : title}
+          {base === '' ? <><span className="text-accent">STR</span>ONG</> : title}
         </h1>
         {base === '' && (
           <button onClick={() => nav('settings')} className="w-9 h-9 rounded-full bg-surface border border-edge text-mut flex items-center justify-center">⚙</button>

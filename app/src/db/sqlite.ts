@@ -160,11 +160,11 @@ export function exportBytes(): Uint8Array { return getDb().export(); }
 export async function importBytes(bytes: Uint8Array): Promise<void> {
   if (!_SQL) throw new Error('DB not initialized');
   const candidate = new _SQL.Database(bytes);
-  // sanity check: must be an Ironlog database
+  // sanity check: must be a STRONG database
   const check = candidate.exec("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('workouts','exercises','sets')");
   if (!check.length || check[0].values.length < 3) {
     candidate.close();
-    throw new Error('Not an Ironlog backup file');
+    throw new Error('Not a STRONG backup file');
   }
   if (_raw) _raw.close();
   _raw = candidate;

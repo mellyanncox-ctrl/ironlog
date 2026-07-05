@@ -208,7 +208,7 @@ async function throws(fn: () => Promise<any>, name: string, match?: RegExp) {
   const legacy = exportBytes();
   await api.backup.import(legacy);
   ok((await api.workouts.list(100)).length === histBefore, 'legacy raw .db backup still imports');
-  await throws(async () => api.backup.import(new TextEncoder().encode('not a database at all — just text')), 'garbage backup file rejected', /Not an Ironlog backup|file is not a database|database disk image/i);
+  await throws(async () => api.backup.import(new TextEncoder().encode('not a database at all — just text')), 'garbage backup file rejected', /Not a STRONG backup|file is not a database|database disk image/i);
 
   console.log('16. Runs (distance pipeline)');
   const runTs = new Date(Date.now() - 3 * 86400000).toISOString();

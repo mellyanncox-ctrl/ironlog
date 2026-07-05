@@ -6,3 +6,6 @@ tests/.build/
 vite.config.mts.timestamp-*.mjs
 
 vite.config.mts.timestamp-*.mjs
+
+.fuse_hidden*
+tests/.build2/

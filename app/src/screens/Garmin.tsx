@@ -165,7 +165,7 @@ export function Garmin({ onNav }: { onNav: (r: string) => void }) {
           )}
         </div>
         <p className="text-[11.5px] text-dim mt-3 leading-relaxed">
-          Note: Garmin's official Connect API (OAuth) is approved for business use only, so Ironlog uses file import.
+          Note: Garmin's official Connect API (OAuth) is approved for business use only, so STRONG uses file import.
           The import pipeline is normalized — an official API source can be added later without schema changes.
         </p>
       </Card>
