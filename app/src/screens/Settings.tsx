@@ -1,9 +1,10 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { api, Settings } from '../api';
 import { Card, Seg, Field, TextInput, Button, confirmDialog } from '../components/ui';
 import { setUnits, todayISO } from '../util';
 import { showToast } from '../components/Toast';
 import { parseStrongCsv } from '../lib/strongParse';
+import { fmtDate, fmtTime } from '../util';
 
 export function SettingsScreen({ settings, onChange }: { settings: Settings; onChange: (s: Settings) => void }) {
   const [rest, setRest] = useState(settings.default_rest);
@@ -110,6 +111,9 @@ export function SettingsScreen({ settings, onChange }: { settings: Settings; onC
         <input ref={fileRef} type="file" accept=".ironlog,.db,application/octet-stream" className="hidden" onChange={(e) => importBackup(e.target.files)} />
       </Card>
 
+      <CloudBackupCard />
+
+
       <Card className="p-4">
         <div className="text-[14px] font-semibold mb-1">Import from Strong</div>
         <p className="text-[12.5px] text-mut leading-relaxed mb-3">
@@ -131,10 +135,112 @@ export function SettingsScreen({ settings, onChange }: { settings: Settings; onC
       <Card className="p-4">
         <div className="text-[14px] font-semibold mb-1">Privacy</div>
         <p className="text-[12.5px] text-mut leading-relaxed">
-          No account, no cloud, no telemetry. Your training data never leaves this device
-          unless you export it yourself.
+          No account, no telemetry. Your training data never leaves this device unless you
+          export it or turn on cloud backup — and cloud backup only ever goes to a private
+          repo you own.
         </p>
       </Card>
     </div>
+  );
+}
+
+function CloudBackupCard() {
+  const [cfg, setCfg] = useState<{ repo: string; has_token: boolean; last_backup_at: string | null } | null>(null);
+  const [repo, setRepo] = useState('');
+  const [token, setToken] = useState('');
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ kind: 'ok' | 'warn'; text: string } | null>(null);
+
+  const load = () => api.backup.cloud.config().then((c) => { setCfg(c); setRepo(c.repo); });
+  useEffect(() => { load(); }, []);
+
+  async function saveAndBackup() {
+    setBusy(true); setMsg(null);
+    try {
+      await api.backup.cloud.configure(repo, token);
+      setToken('');
+      const r = await api.backup.cloud.now(true);
+      if (r.state === 'ok') { setMsg({ kind: 'ok', text: `Backed up ${(r.bytes! / 1024).toFixed(0)} KB.` }); setOpen(false); }
+      else if (r.state === 'unconfigured') setMsg({ kind: 'warn', text: 'Enter the repo and token first.' });
+      else if (r.state === 'error') setMsg({ kind: 'warn', text: r.message! });
+      load();
+    } catch (e: any) {
+      setMsg({ kind: 'warn', text: e.message });
+    } finally { setBusy(false); }
+  }
+
+  async function backupNow() {
+    setBusy(true); setMsg(null);
+    try {
+      const r = await api.backup.cloud.now(true);
+      if (r.state === 'ok') setMsg({ kind: 'ok', text: `Backed up ${(r.bytes! / 1024).toFixed(0)} KB just now.` });
+      else if (r.state === 'error') setMsg({ kind: 'warn', text: r.message! });
+      load();
+    } finally { setBusy(false); }
+  }
+
+  async function restore() {
+    if (!confirmDialog('Restore from cloud REPLACES all data on this device with the latest cloud backup. Continue?')) return;
+    setBusy(true); setMsg(null);
+    try {
+      await api.backup.cloud.restore();
+      showToast('Restored from cloud', 'ok');
+      setTimeout(() => location.reload(), 600);
+    } catch (e: any) {
+      setMsg({ kind: 'warn', text: e.message || 'Restore failed' });
+    } finally { setBusy(false); }
+  }
+
+  if (!cfg) return null;
+  const configured = cfg.repo && cfg.has_token;
+  return (
+    <Card className="p-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="text-[14px] font-semibold">Cloud backup {configured && <span className="text-good text-[12px] font-medium">· on</span>}</div>
+          <div className="text-[12.5px] text-mut mt-0.5">
+            {configured
+              ? `Auto-backs up to ${cfg.repo} on launch and after each workout.${cfg.last_backup_at ? ` Last ${fmtDate(cfg.last_backup_at)} ${fmtTime(cfg.last_backup_at)}.` : ''}`
+              : 'Automatically save your data to a private GitHub repo so a lost phone never means lost history.'}
+          </div>
+        </div>
+        <Button small kind="ghost" onClick={() => setOpen(!open)}>{open ? 'Close' : configured ? 'Edit' : 'Set up'}</Button>
+      </div>
+
+      {configured && !open && (
+        <div className="flex gap-2 mt-3">
+          <Button small disabled={busy} onClick={backupNow}>{busy ? 'Backing up…' : 'Back up now'}</Button>
+          <Button small kind="ghost" disabled={busy} onClick={restore}>Restore from cloud</Button>
+        </div>
+      )}
+
+      {open && (
+        <div className="mt-3">
+          <p className="text-[12.5px] text-mut leading-relaxed mb-3">
+            Create a <span className="font-medium">private</span> GitHub repo (e.g. <span className="font-medium">you/ironlog-backup</span>) and a
+            fine-grained token with <span className="font-medium">Contents: read &amp; write</span> on just that repo. Both stay on this device.
+            To recover on a new phone, install Ironlog, enter the same repo and token here, and tap Restore.
+          </p>
+          <Field label="Backup repo (owner/repo)">
+            <TextInput value={repo} onChange={(e) => setRepo(e.target.value)} placeholder="you/ironlog-backup" autoCapitalize="none" autoCorrect="off" />
+          </Field>
+          <Field label={cfg.has_token ? 'GitHub token (saved — leave blank to keep)' : 'GitHub token (Contents: read & write)'}>
+            <TextInput type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder={cfg.has_token ? '••••••••' : 'github_pat_…'} autoCapitalize="none" autoCorrect="off" />
+          </Field>
+          <div className="flex gap-2">
+            <Button small disabled={busy || !repo.trim()} onClick={saveAndBackup}>{busy ? 'Saving…' : 'Save & back up'}</Button>
+            {configured && (
+              <Button small kind="danger" onClick={async () => {
+                if (!confirmDialog('Turn off cloud backup and forget the token? Your cloud backup file stays in the repo.')) return;
+                await api.backup.cloud.configure('', '');
+                setRepo(''); setToken(''); setMsg(null); setOpen(false); load();
+              }}>Turn off</Button>
+            )}
+          </div>
+        </div>
+      )}
+      {msg && <div className={`text-[13px] mt-3 ${msg.kind === 'ok' ? 'text-good' : 'text-accent'}`}>{msg.text}</div>}
+    </Card>
   );
 }

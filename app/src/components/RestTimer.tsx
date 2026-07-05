@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { fmtClock } from '../util';
+import { fmtClock, cx } from '../util';
 
 // Singleton rest timer state (survives navigation within the SPA).
 type TimerState = { endsAt: number; total: number } | null;
@@ -53,14 +53,23 @@ function beep() {
 
 export function RestTimerBar() {
   const [, force] = useState(0);
-  const doneRef = useRef(false);
+  // Key the "finished" handling on the timer's endsAt so each distinct rest
+  // period fires its beep exactly once, and — critically — a scheduled cleanup
+  // only clears the timer it belongs to. Previously a fresh timer started within
+  // 1.6s of the last one finishing got wiped by the old cleanup → "no rest timer".
+  const firedRef = useRef<number | null>(null);
   useEffect(() => {
     const l = () => force((x) => x + 1);
     listeners.add(l);
     const iv = setInterval(() => {
       if (timerState) {
         const left = Math.ceil((timerState.endsAt - Date.now()) / 1000);
-        if (left <= 0 && !doneRef.current) { doneRef.current = true; beep(); setTimeout(() => { clearRestTimer(); doneRef.current = false; }, 1600); }
+        if (left <= 0 && firedRef.current !== timerState.endsAt) {
+          firedRef.current = timerState.endsAt;
+          const finished = timerState.endsAt;
+          beep();
+          setTimeout(() => { if (timerState && timerState.endsAt === finished) clearRestTimer(); }, 1600);
+        }
         force((x) => x + 1);
       }
     }, 250);
@@ -69,25 +78,35 @@ export function RestTimerBar() {
   if (!timerState) return null;
   const left = Math.max(0, Math.ceil((timerState.endsAt - Date.now()) / 1000));
   const pct = Math.max(0, Math.min(1, left / timerState.total));
+  const done = left === 0;
+  const R = 26, C = 2 * Math.PI * R; // ring geometry
   return (
-    <div className="fixed left-3 right-3 bottom-[calc(env(safe-area-inset-bottom)+76px)] z-40 animate-slideup">
-      <div className="bg-surface2/95 backdrop-blur border border-edge rounded-2xl px-4 py-2.5 flex items-center gap-3 shadow-xl shadow-black/40">
-        <div className="relative w-9 h-9 shrink-0">
-          <svg viewBox="0 0 36 36" className="w-9 h-9 -rotate-90">
-            <circle cx="18" cy="18" r="15" fill="none" stroke="#2b3440" strokeWidth="3.5" />
-            <circle cx="18" cy="18" r="15" fill="none" stroke={left === 0 ? '#2ec7a5' : '#4b93f8'} strokeWidth="3.5"
-              strokeDasharray={`${pct * 94.2} 94.2`} strokeLinecap="round" />
+    <div className="fixed inset-x-0 top-1/2 -translate-y-1/2 z-40 px-6 flex justify-center pointer-events-none animate-slideup">
+      <div className={cx(
+        'pointer-events-auto w-full max-w-xs bg-surface2/95 backdrop-blur rounded-3xl px-6 pt-6 pb-5 shadow-2xl shadow-black/60 border',
+        done ? 'border-good/60' : 'border-accent/50',
+      )}>
+        <div className="text-center text-[11px] font-semibold uppercase tracking-[0.2em] text-mut mb-4">
+          {done ? 'Rest complete' : 'Resting'}
+        </div>
+        <div className="relative w-40 h-40 mx-auto mb-5">
+          <svg viewBox="0 0 64 64" className="w-40 h-40 -rotate-90">
+            <circle cx="32" cy="32" r={R} fill="none" stroke="#2b3440" strokeWidth="5" />
+            <circle cx="32" cy="32" r={R} fill="none" stroke={done ? '#2ec7a5' : '#4b93f8'} strokeWidth="5"
+              strokeDasharray={`${pct * C} ${C}`} strokeLinecap="round"
+              style={{ transition: 'stroke-dasharray 0.25s linear' }} />
           </svg>
-        </div>
-        <div className="grow">
-          <div className={`text-[19px] font-bold tabular-nums leading-none ${left === 0 ? 'text-good' : 'text-ink'}`}>
-            {left === 0 ? 'Go' : fmtClock(left)}
+          <div className="absolute inset-0 flex flex-col items-center justify-center">
+            <span className={cx('text-[38px] font-bold tabular-nums leading-none', done ? 'text-good' : 'text-ink')}>
+              {done ? 'Go' : fmtClock(left)}
+            </span>
           </div>
-          <div className="text-[11px] text-mut mt-0.5">Rest timer</div>
         </div>
-        <button onClick={() => adjustRestTimer(-15)} className="px-2.5 py-1.5 rounded-lg bg-surface border border-edge text-[12px] font-semibold text-mut active:bg-edge">−15</button>
-        <button onClick={() => adjustRestTimer(15)} className="px-2.5 py-1.5 rounded-lg bg-surface border border-edge text-[12px] font-semibold text-mut active:bg-edge">+15</button>
-        <button onClick={clearRestTimer} className="px-2.5 py-1.5 rounded-lg text-[12px] font-semibold text-mut active:opacity-60">Skip</button>
+        <div className="flex items-center justify-center gap-2">
+          <button onClick={() => adjustRestTimer(-15)} className="px-4 py-2 rounded-xl bg-surface border border-edge text-[13px] font-semibold text-mut active:bg-edge">−15</button>
+          <button onClick={() => adjustRestTimer(15)} className="px-4 py-2 rounded-xl bg-surface border border-edge text-[13px] font-semibold text-mut active:bg-edge">+15</button>
+          <button onClick={clearRestTimer} className="px-4 py-2 rounded-xl bg-accent text-white text-[13px] font-bold active:bg-accent-dim">{done ? 'Done' : 'Skip'}</button>
+        </div>
       </div>
     </div>
   );

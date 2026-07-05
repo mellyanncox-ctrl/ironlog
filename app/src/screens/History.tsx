@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { api, WorkoutSummary, Workout, GarminActivity } from '../api';
+import { api, WorkoutSummary, Workout, GarminActivity, PRRow } from '../api';
 import { Card, Pill, Empty, Button, Spinner, confirmDialog, Sheet, Field, TextInput } from '../components/ui';
 import { fmtDate, fmtTime, fmtVolume, fmtWeight, fmtDuration, fmtDistance, fmtPace, cx, kgOut, inKg, getUnits } from '../util';
 
@@ -17,6 +17,7 @@ const typeLabel = (t: string) => t.replace(/_/g, ' ').replace(/^\w/, (c) => c.to
 
 export function History({ onNav, onDuplicated }: { onNav: (r: string) => void; onDuplicated: () => void }) {
   const [list, setList] = useState<HistoryItem[] | null>(null);
+  const [prs, setPrs] = useState<PRRow[]>([]);
   useEffect(() => {
     Promise.all([api.workouts.list(200), api.garmin.activities(300)]).then(([ws, as]) => {
       const items: HistoryItem[] = [
@@ -26,6 +27,10 @@ export function History({ onNav, onDuplicated }: { onNav: (r: string) => void; o
       items.sort((a, b) => b.date.localeCompare(a.date));
       setList(items);
     });
+    api.stats.prs().then((rows) =>
+      setPrs(rows.filter((r) => r.max_weight != null || r.best_e1rm != null)
+        .sort((a, b) => (b.best_e1rm ?? 0) - (a.best_e1rm ?? 0)))
+    ).catch(() => {});
   }, []);
   if (!list) return <Spinner />;
   if (list.length === 0) return <Empty icon="📓" title="No workouts yet" sub="Finished workouts and Garmin activities appear here." />;
@@ -40,6 +45,7 @@ export function History({ onNav, onDuplicated }: { onNav: (r: string) => void; o
 
   return (
     <div className="px-4 pt-2 pb-4 space-y-5">
+      {prs.length > 0 && <PersonalBests prs={prs} onNav={onNav} />}
       {groups.map((g) => (
         <div key={g.label}>
           <h2 className="text-[13px] font-semibold text-mut uppercase tracking-wide mb-2">{g.label}</h2>
@@ -55,7 +61,7 @@ export function History({ onNav, onDuplicated }: { onNav: (r: string) => void; o
                   <div className="text-[12px] text-dim truncate mt-0.5">{it.w.exercise_names.join(' · ')}</div>
                 </Card>
               ) : (
-                <Card key={`g${it.a.id}`} className="px-4 py-3" onClick={it.a.activity_type === 'running' ? () => onNav('runs') : undefined}>
+                <Card key={`g${it.a.id}`} className="px-4 py-3" onClick={() => onNav(`activity/${it.a.id}`)}>
                   <div className="flex items-center justify-between mb-0.5">
                     <div className="text-[15px] font-semibold">{typeIcon(it.a.activity_type)} {it.a.name || typeLabel(it.a.activity_type)}</div>
                     {it.a.distance_m != null && it.a.distance_m > 0 && (
@@ -76,6 +82,40 @@ export function History({ onNav, onDuplicated }: { onNav: (r: string) => void; o
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+function PersonalBests({ prs, onNav }: { prs: PRRow[]; onNav: (r: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const shown = open ? prs : prs.slice(0, 3);
+  return (
+    <div>
+      <button onClick={() => setOpen((o) => !o)} className="w-full flex items-center justify-between mb-2 px-1">
+        <h2 className="text-[13px] font-semibold text-mut uppercase tracking-wide">🏆 Personal bests <span className="text-dim normal-case font-normal">· {prs.length}</span></h2>
+        <span className="text-[12px] text-accent font-medium">{open ? 'Show less' : 'Show all'}</span>
+      </button>
+      <div className="space-y-2">
+        {shown.map((r) => (
+          <Card key={r.exercise_id} className="px-4 py-3" onClick={() => onNav(`library/${r.exercise_id}`)}>
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-[14px] font-semibold truncate">{r.exercise_name}</div>
+                <div className="text-[12px] text-mut tabular-nums">
+                  {r.max_weight != null ? `Heaviest ${fmtWeight(r.max_weight)}${r.max_weight_reps ? ` × ${r.max_weight_reps}` : ''}` : ''}
+                  {r.max_reps != null ? `${r.max_weight != null ? ' · ' : ''}Most reps ${r.max_reps}` : ''}
+                </div>
+              </div>
+              {r.best_e1rm != null && (
+                <div className="text-right shrink-0">
+                  <div className="text-[15px] font-bold text-accent tabular-nums">{fmtWeight(r.best_e1rm)}</div>
+                  <div className="text-[10px] uppercase tracking-wide text-dim">est. 1RM</div>
+                </div>
+              )}
+            </div>
+          </Card>
+        ))}
+      </div>
     </div>
   );
 }

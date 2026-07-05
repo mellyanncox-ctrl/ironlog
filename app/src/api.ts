@@ -9,6 +9,7 @@ import * as reportsMod from './db/reports';
 import { suggestions as suggestionsFn } from './db/suggestions';
 import * as garminMod from './db/garmin';
 import { fetchSyncSnapshot, REPO_RE, type SyncOutcome } from './lib/remoteSync';
+import { pushBackup, pullBackup, REPO_RE as BACKUP_REPO_RE } from './lib/cloudBackup';
 import { matchStrongExercise, type StrongWorkout } from './lib/strongParse';
 import { fetchOpenFoodFacts, normalizeBarcode, type FoodDraft } from './lib/openfoodfacts';
 import { seed as seedDemo } from './db/seed-demo';
@@ -1184,6 +1185,60 @@ export const api = {
       await photoStore.clear(); // legacy backups carry no photos
       getDb().exec('DELETE FROM progress_photos'); // keep metadata consistent with empty blob store
       return { ok: true, photos: 0 };
+    },
+
+    // Automatic off-device backup to a private GitHub repo the user owns.
+    // Same on-device token model as Garmin sync (settings table, never leaves
+    // the device except in user-made backups). This is what protects data
+    // against a lost phone without the user remembering to export a file.
+    cloud: {
+      config: async () => {
+        await ok();
+        return {
+          repo: getSetting('backup_repo', ''),
+          has_token: !!getSetting('backup_token', ''),
+          last_backup_at: getSetting('backup_at', '') || null,
+        };
+      },
+      configure: async (repo: string, token: string) => {
+        await ok();
+        const r = String(repo || '').trim();
+        const t = String(token || '').trim();
+        if (r && !BACKUP_REPO_RE.test(r)) throw new UserError('Repo must look like owner/repo');
+        setSetting('backup_repo', r);
+        if (t || !r) setSetting('backup_token', t); // blank token keeps the stored one; clearing repo clears all
+        if (!r) setSetting('backup_at', '');
+        await flush();
+        return { repo: r, has_token: !!getSetting('backup_token', '') };
+      },
+      now: async (force = false, fetchFn?: typeof fetch): Promise<{ state: 'unconfigured' | 'skipped' | 'ok' | 'error'; bytes?: number; at?: string; message?: string }> => {
+        await ok();
+        const repo = getSetting('backup_repo', '');
+        const token = getSetting('backup_token', '');
+        if (!repo || !token) return { state: 'unconfigured' };
+        const last = getSetting('backup_at', '');
+        if (!force && last && Date.now() - new Date(last).getTime() < 6 * 3600 * 1000) return { state: 'skipped' };
+        try {
+          const blob = await api.backup.export();
+          const bytes = new Uint8Array(await blob.arrayBuffer());
+          await pushBackup(repo, token, bytes, fetchFn ?? fetch);
+          const at = localISO();
+          setSetting('backup_at', at);
+          await flush();
+          return { state: 'ok', bytes: bytes.length, at };
+        } catch (e: any) {
+          return { state: 'error', message: e?.message || 'Backup failed' };
+        }
+      },
+      restore: async (fetchFn?: typeof fetch) => {
+        await ok();
+        const repo = getSetting('backup_repo', '');
+        const token = getSetting('backup_token', '');
+        if (!repo || !token) throw new UserError('Set up cloud backup first');
+        const bytes = await pullBackup(repo, token, fetchFn ?? fetch);
+        await api.backup.import(bytes);
+        return { ok: true };
+      },
     },
   },
 };

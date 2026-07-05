@@ -8,7 +8,7 @@ import { Routines } from './screens/Routines';
 import { Library, ExerciseDetail } from './screens/Library';
 import { Progress } from './screens/Progress';
 import { Reports } from './screens/Reports';
-import { Garmin } from './screens/Garmin';
+import { Garmin, ActivityDetail } from './screens/Garmin';
 import { Runs } from './screens/Runs';
 import { Photos } from './screens/Photos';
 import { SettingsScreen } from './screens/Settings';
@@ -38,7 +38,7 @@ const TABS = [
 const TITLES: Record<string, string> = {
   '': 'Ironlog', food: 'Nutrition', history: 'History', routines: 'Routines', progress: 'Progress',
   library: 'Exercises', reports: 'Reports', garmin: 'Garmin', runs: 'Runs',
-  photos: 'Progress photos', settings: 'Settings', more: 'More',
+  activity: 'Activity', photos: 'Progress photos', settings: 'Settings', more: 'More',
 };
 
 export default function App() {
@@ -59,6 +59,8 @@ export default function App() {
             showToast(`Garmin: ${r.activities} new ${r.activities === 1 ? 'activity' : 'activities'}, ${r.daily} wellness days`, 'ok');
           }
         }).catch(() => {});
+        // Silent, throttled cloud backup on launch (no-op unless configured).
+        api.backup.cloud.now().catch(() => {});
       }
     });
   }, []);
@@ -87,6 +89,7 @@ export default function App() {
   }
   function workoutDone() {
     setActiveId(null); setShowWorkout(false);
+    api.backup.cloud.now(true).catch(() => {}); // safeguard the just-finished session
     nav(''); // refresh home
   }
 
@@ -115,7 +118,8 @@ export default function App() {
       {base === 'library' && seg[1] && <ExerciseDetail id={Number(seg[1])} onNav={nav} muscles={muscles} equipment={equipment} />}
       {base === 'progress' && <Progress onNav={nav} />}
       {base === 'reports' && <Reports onNav={nav} />}
-      {base === 'garmin' && <Garmin />}
+      {base === 'garmin' && <Garmin onNav={nav} />}
+      {base === 'activity' && seg[1] && <ActivityDetail id={Number(seg[1])} onNav={nav} />}
       {base === 'runs' && <Runs onNav={nav} />}
       {base === 'photos' && <Photos />}
       {base === 'settings' && <SettingsScreen settings={boot.settings} onChange={(s) => setBoot({ ...boot, settings: s })} />}
@@ -133,7 +137,7 @@ export default function App() {
       <nav className="fixed bottom-0 left-0 right-0 z-30 bg-bg/90 backdrop-blur border-t border-edge">
         <div className="max-w-lg mx-auto flex pb-[env(safe-area-inset-bottom)]">
           {TABS.map((t) => {
-            const active = base === t.key || (t.key === 'more' && ['history', 'library', 'garmin', 'reports', 'settings', 'runs', 'photos'].includes(base));
+            const active = base === t.key || (t.key === 'more' && ['history', 'library', 'garmin', 'reports', 'settings', 'runs', 'photos', 'activity'].includes(base));
             return (
               <button key={t.key} onClick={() => nav(t.key)}
                 className={cx('flex-1 pt-2.5 pb-2 flex flex-col items-center gap-0.5 transition-colors', active ? 'text-accent' : 'text-dim')}>
@@ -147,7 +151,7 @@ export default function App() {
 
       {/* active workout overlay */}
       {showWorkout && activeId && (
-        <WorkoutScreen workoutId={activeId} onDone={workoutDone} muscles={muscles} equipment={equipment} />
+        <WorkoutScreen workoutId={activeId} onDone={workoutDone} onMinimize={() => setShowWorkout(false)} muscles={muscles} equipment={equipment} />
       )}
       <RestTimerBar />
     </div>

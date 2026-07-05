@@ -9,8 +9,8 @@ const SET_TYPE_LABEL: Record<string, string> = { warmup: 'W', working: '', drops
 const SET_TYPE_COLOR: Record<string, string> = { warmup: 'text-blue', working: 'text-mut', dropset: 'text-accent', failure: 'text-bad' };
 const SS_COLORS = ['#ff9f0a', '#0a84ff', '#bf5af2', '#30d158', '#ff6482'];
 
-export function WorkoutScreen({ workoutId, onDone, muscles, equipment }: {
-  workoutId: number; onDone: () => void; muscles: string[]; equipment: string[];
+export function WorkoutScreen({ workoutId, onDone, onMinimize, muscles, equipment }: {
+  workoutId: number; onDone: () => void; onMinimize: () => void; muscles: string[]; equipment: string[];
 }) {
   const [w, setW] = useState<Workout | null>(null);
   const [picker, setPicker] = useState(false);
@@ -70,7 +70,10 @@ export function WorkoutScreen({ workoutId, onDone, muscles, equipment }: {
       {/* header */}
       <div className="sticky top-0 z-30 bg-bg/90 backdrop-blur border-b border-edge px-4 pt-[calc(env(safe-area-inset-top)+10px)] pb-3">
         <div className="flex items-center justify-between max-w-lg mx-auto">
-          <button onClick={cancel} className="text-bad text-[14px] font-medium py-1">Discard</button>
+          <button onClick={onMinimize} className="flex items-center gap-1 text-mut text-[14px] font-medium py-1 pr-2" title="Back to home — workout keeps running">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9l6 6 6-6" /></svg>
+            Home
+          </button>
           <div className="text-center">
             <input value={w.name}
               onChange={(e) => setW({ ...w, name: e.target.value })}
@@ -101,6 +104,8 @@ export function WorkoutScreen({ workoutId, onDone, muscles, equipment }: {
           <TextInput value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Felt strong. Slept 8h." />
         </Field>
         <Button className="w-full" onClick={finish}>Save workout</Button>
+        <button onClick={() => { setFinishing(false); cancel(); }}
+          className="w-full mt-3 text-bad text-[14px] font-medium py-2 active:opacity-60">Discard workout</button>
       </Sheet>
     </div>
   );
@@ -195,6 +200,20 @@ function SetLine({ s, idx, we, onChange, workout, setW }: {
   const [rpe, setRpe] = useState<string>(s.rpe != null ? String(s.rpe) : '');
   useEffect(() => { setWeight(s.weight != null ? String(kgOut(s.weight)) : ''); setReps(s.reps != null ? String(s.reps) : ''); setRpe(s.rpe != null ? String(s.rpe) : ''); }, [s.id, s.weight, s.reps, s.rpe]);
 
+  // Swipe-left to reveal delete. Only engages on a deliberate horizontal drag,
+  // so typing in the inputs and vertical scrolling are unaffected.
+  const [dx, setDx] = useState(0);
+  const swipe = useRef<{ x: number; y: number; active: boolean } | null>(null);
+  function onTouchStart(e: React.TouchEvent) { const t = e.touches[0]; swipe.current = { x: t.clientX, y: t.clientY, active: false }; }
+  function onTouchMove(e: React.TouchEvent) {
+    const st = swipe.current; if (!st) return;
+    const t = e.touches[0]; const mx = t.clientX - st.x, my = t.clientY - st.y;
+    if (!st.active) { if (Math.abs(mx) < 8 || Math.abs(mx) <= Math.abs(my)) return; st.active = true; }
+    e.preventDefault();
+    setDx(Math.max(-84, Math.min(0, mx + (dx < 0 ? -0 : 0))));
+  }
+  function onTouchEnd() { const st = swipe.current; swipe.current = null; if (!st?.active) return; setDx((d) => (d < -42 ? -76 : 0)); }
+
   const prevSet = we.previous[idx];
   const workingIdx = we.sets.filter((x) => x.set_type !== 'warmup').findIndex((x) => x.id === s.id);
   const label = s.set_type === 'working' ? String(workingIdx + 1) : SET_TYPE_LABEL[s.set_type];
@@ -231,8 +250,19 @@ function SetLine({ s, idx, we, onChange, workout, setW }: {
   async function removeSet() { await api.sets.remove(s.id); onChange(); }
 
   return (
-    <div className={cx('grid grid-cols-[36px_1fr_72px_60px_46px_40px] gap-1 items-center px-2 py-[3px] rounded-lg', s.completed ? 'bg-good/10' : '')}>
-      <button onClick={cycleType} onDoubleClick={removeSet}
+    <div className="relative overflow-hidden rounded-lg">
+      {/* delete revealed on swipe-left */}
+      <button onClick={removeSet}
+        className="absolute inset-y-0 right-0 w-[76px] flex items-center justify-center bg-bad text-white text-[12px] font-semibold"
+        style={{ opacity: dx < 0 ? 1 : 0 }}>
+        Delete
+      </button>
+      <div
+        onTouchStart={onTouchStart} onTouchMove={onTouchMove} onTouchEnd={onTouchEnd}
+        style={{ transform: `translateX(${dx}px)`, transition: swipe.current ? 'none' : 'transform 0.18s ease' }}
+        className="relative grid grid-cols-[36px_1fr_72px_60px_46px_40px] gap-1 items-center px-2 py-[3px] rounded-lg bg-surface">
+      {s.completed && <span className="absolute inset-0 rounded-lg bg-good/10 pointer-events-none" />}
+      <button onClick={cycleType}
         className={cx('h-8 rounded-lg text-[13px] font-bold', SET_TYPE_COLOR[s.set_type], s.set_type !== 'working' && 'bg-surface2')}>
         {label || workingIdx + 1}
       </button>
@@ -249,9 +279,10 @@ function SetLine({ s, idx, we, onChange, workout, setW }: {
         onChange={(e) => setRpe(e.target.value)} onBlur={() => save()}
         className={cx('h-8 rounded-lg text-center text-[13px] tabular-nums bg-surface2 text-mut outline-none focus:ring-1 focus:ring-accent/60', s.completed && 'bg-transparent')} />
       <button onClick={toggleDone}
-        className={cx('h-8 rounded-lg font-bold text-[15px] transition-colors', s.completed ? 'bg-good text-black' : 'bg-surface2 text-dim')}>
+        className={cx('relative h-8 rounded-lg font-bold text-[15px] transition-colors', s.completed ? 'bg-good text-black' : 'bg-surface2 text-dim')}>
         ✓
       </button>
+      </div>
     </div>
   );
 }

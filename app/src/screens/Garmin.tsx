@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { api, GarminActivity, GarminDaily } from '../api';
 import { Card, Button, Spinner, Empty, confirmDialog, Field, TextInput } from '../components/ui';
 import { parseGarminFile } from '../lib/garminParse';
-import { fmtDate, fmtTime, fmtDuration, fmtDistance, cap } from '../util';
+import { fmtDate, fmtTime, fmtDuration, fmtDistance, fmtPace, cap } from '../util';
 
 function AutoSyncCard({ onImported }: { onImported: () => void }) {
   const [cfg, setCfg] = useState<{ repo: string; has_token: boolean; last_sync_at: string | null } | null>(null);
@@ -86,7 +86,7 @@ const TYPE_ICON: Record<string, string> = {
   swimming: '🏊', yoga: '🧘', hiking: '🥾', cardio: '💓', other: '⚡',
 };
 
-export function Garmin() {
+export function Garmin({ onNav }: { onNav: (r: string) => void }) {
   const [activities, setActivities] = useState<GarminActivity[] | null>(null);
   const [daily, setDaily] = useState<GarminDaily[]>([]);
   const [busy, setBusy] = useState(false);
@@ -192,7 +192,7 @@ export function Garmin() {
           <h2 className="text-[13px] font-semibold text-mut uppercase tracking-wide mb-2">Activities</h2>
           <div className="space-y-1.5">
             {activities.map((a) => (
-              <Card key={a.id} className="px-4 py-3">
+              <Card key={a.id} className="px-4 py-3" onClick={() => onNav(`activity/${a.id}`)}>
                 <div className="flex items-center gap-3">
                   <span className="text-xl">{TYPE_ICON[a.activity_type] || TYPE_ICON.other}</span>
                   <div className="grow min-w-0">
@@ -203,6 +203,7 @@ export function Garmin() {
                     <div>{a.distance_m ? `${fmtDistance(a.distance_m)} · ` : ''}{fmtDuration(a.duration_s)}{a.calories ? ` · ${a.calories} kcal` : ''}</div>
                     <div>{a.avg_hr ? `♥ ${a.avg_hr}${a.max_hr ? `/${a.max_hr}` : ''} bpm` : ''}{a.training_load ? ` · load ${Math.round(a.training_load)}` : ''}</div>
                   </div>
+                  <span className="text-dim shrink-0">›</span>
                 </div>
               </Card>
             ))}
@@ -211,6 +212,64 @@ export function Garmin() {
       ) : (
         <Empty icon="⌚" title="No Garmin data yet" sub="Import an export file above, or generate demo data to see how activities and recovery flow into your reports." />
       )}
+    </div>
+  );
+}
+
+function DetailStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="bg-surface border border-edge rounded-2xl px-4 py-3">
+      <div className="text-[11px] uppercase tracking-wide text-mut">{label}</div>
+      <div className="text-[19px] font-bold tabular-nums mt-0.5">{value}</div>
+    </div>
+  );
+}
+
+export function ActivityDetail({ id, onNav }: { id: number; onNav: (r: string) => void }) {
+  const [act, setAct] = useState<GarminActivity | null | undefined>(undefined);
+  useEffect(() => { api.garmin.activities(500).then((list) => setAct(list.find((a) => a.id === id) ?? null)); }, [id]);
+
+  if (act === undefined) return <Spinner />;
+  if (act === null) return (
+    <div className="px-4 pt-2">
+      <button onClick={() => onNav('garmin')} className="text-accent text-[14px] font-medium mb-3">‹ Garmin</button>
+      <Empty icon="⌚" title="Activity not found" sub="It may have been cleared." />
+    </div>
+  );
+
+  const a = act;
+  const isDistance = a.distance_m != null && a.distance_m > 0;
+  const stats: { label: string; value: string }[] = [];
+  if (isDistance) stats.push({ label: 'Distance', value: fmtDistance(a.distance_m!) });
+  if (a.duration_s) stats.push({ label: 'Duration', value: fmtDuration(a.duration_s) });
+  if (isDistance && a.duration_s) stats.push({ label: 'Avg pace', value: fmtPace(a.duration_s, a.distance_m!) });
+  if (a.calories) stats.push({ label: 'Calories', value: `${a.calories} kcal` });
+  if (a.avg_hr) stats.push({ label: 'Avg HR', value: `${a.avg_hr} bpm` });
+  if (a.max_hr) stats.push({ label: 'Max HR', value: `${a.max_hr} bpm` });
+  if (a.training_load != null) stats.push({ label: 'Training load', value: String(Math.round(a.training_load)) });
+
+  return (
+    <div className="px-4 pt-2 pb-8">
+      <button onClick={() => onNav('garmin')} className="text-accent text-[14px] font-medium mb-3">‹ Garmin</button>
+      <div className="flex items-center gap-3 mb-4">
+        <span className="text-3xl">{TYPE_ICON[a.activity_type] || TYPE_ICON.other}</span>
+        <div className="min-w-0">
+          <h1 className="text-[22px] font-bold leading-tight">{a.name || cap(a.activity_type.replace(/_/g, ' '))}</h1>
+          <div className="text-[13px] text-mut">{fmtDate(a.started_at)} · {fmtTime(a.started_at)}</div>
+        </div>
+      </div>
+
+      {stats.length > 0 ? (
+        <div className="grid grid-cols-2 gap-2">
+          {stats.map((s) => <DetailStat key={s.label} label={s.label} value={s.value} />)}
+        </div>
+      ) : (
+        <p className="text-[13px] text-mut">No metrics were recorded for this activity.</p>
+      )}
+
+      <div className="mt-5 text-[12px] text-dim">
+        {cap(a.activity_type.replace(/_/g, ' '))} · source: {a.source}
+      </div>
     </div>
   );
 }

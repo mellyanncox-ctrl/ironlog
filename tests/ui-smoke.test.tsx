@@ -75,10 +75,10 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
     const el = dom.window.document.getElementById('root')!;
     el.innerHTML = '';
     const root = createRoot(el);
-    root.render(React.createElement(WorkoutScreen, { workoutId: active.id, onDone: () => {}, muscles: [], equipment: [] }));
+    root.render(React.createElement(WorkoutScreen, { workoutId: active.id, onDone: () => {}, onMinimize: () => {}, muscles: [], equipment: [] }));
     await wait(700);
     const text = el.textContent || '';
-    const need = ['Finish', 'Add exercise', 'Add set', 'Discard'];
+    const need = ['Finish', 'Add exercise', 'Add set', 'Home'];
     const missing = need.filter((s) => !text.includes(s));
     if (missing.length === 0 && errors.length === 0) { passed++; console.log('  ✓ active WorkoutScreen'); }
     else { failed++; console.log(`  ✗ active WorkoutScreen missing=[${missing}] errors=[${errors}]`); }
