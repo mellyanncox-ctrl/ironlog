@@ -5,27 +5,43 @@ import { processPhoto } from '../db/photos';
 import { showToast } from '../components/Toast';
 import { fmtDate, fmtWeight, todayISO, isoWeekStartLocal, cx } from '../util';
 
-// Object-URL cache per blob_key, revoked on unmount.
+// Per-key load state: undefined = still loading, string = object URL,
+// 'missing' = blob bytes gone/undecodable (show a real placeholder, never a
+// broken <img>). Object URLs are revoked on unmount.
+type PhotoState = Record<string, string | 'missing'>;
+
 function usePhotoUrls(photos: ProgressPhoto[]) {
-  const [urls, setUrls] = useState<Record<string, string>>({});
-  const cache = useRef<Record<string, string>>({});
+  const [urls, setUrls] = useState<PhotoState>({});
+  const cache = useRef<PhotoState>({});
+  const markMissing = (key: string) => {
+    const u = cache.current[key];
+    if (typeof u === 'string' && u !== 'missing') URL.revokeObjectURL(u);
+    cache.current[key] = 'missing';
+    setUrls({ ...cache.current });
+  };
   useEffect(() => {
     let alive = true;
     (async () => {
       for (const p of photos) {
-        if (cache.current[p.blob_key]) continue;
+        if (cache.current[p.blob_key] !== undefined) continue;
         const blob = await api.photos.blob(p.blob_key);
         if (!alive) return;
-        if (blob) {
-          cache.current[p.blob_key] = URL.createObjectURL(blob);
-          setUrls({ ...cache.current });
-        }
+        cache.current[p.blob_key] = blob ? URL.createObjectURL(blob) : 'missing';
+        setUrls({ ...cache.current });
       }
     })();
     return () => { alive = false; };
   }, [photos]);
-  useEffect(() => () => { Object.values(cache.current).forEach((u) => URL.revokeObjectURL(u)); }, []);
-  return urls;
+  useEffect(() => () => {
+    Object.values(cache.current).forEach((u) => { if (typeof u === 'string' && u !== 'missing') URL.revokeObjectURL(u); });
+  }, []);
+  return { urls, markMissing };
+}
+
+// Returns a usable object URL, or undefined for loading/missing states.
+function validPhotoUrl(urls: PhotoState, key: string): string | undefined {
+  const u = urls[key];
+  return typeof u === 'string' && u !== 'missing' ? u : undefined;
 }
 
 export function Photos() {
@@ -40,7 +56,19 @@ export function Photos() {
 
   const reload = () => api.photos.list().then(setPhotos);
   useEffect(() => { reload(); }, []);
-  const urls = usePhotoUrls(photos || []);
+  const { urls, markMissing } = usePhotoUrls(photos || []);
+
+  const missingCount = useMemo(
+    () => (photos || []).filter((p) => urls[p.blob_key] === 'missing').length,
+    [photos, urls],
+  );
+
+  async function cleanupMissing() {
+    if (!confirmDialog(`Remove ${missingCount} photo${missingCount === 1 ? '' : 's'} whose image data is no longer on this device? The entries can't be recovered without a backup.`)) return;
+    const n = await api.photos.pruneMissing();
+    reload();
+    showToast(n ? `Removed ${n} unavailable photo${n === 1 ? '' : 's'}` : 'Nothing to remove', 'ok');
+  }
 
   const byWeek = useMemo(() => {
     const groups: { week: string; items: ProgressPhoto[] }[] = [];
@@ -103,6 +131,15 @@ export function Photos() {
         )}
       </div>
 
+      {missingCount > 0 && !compare && (
+        <div className="mb-3 rounded-xl border border-edge bg-surface2 p-3">
+          <p className="text-[13px] text-mut">
+            {missingCount} photo{missingCount === 1 ? "'s" : "s'"} image data is missing from this device — the entr{missingCount === 1 ? 'y' : 'ies'} can't be shown. This can happen when the browser reclaims storage. Restore a <code>.ironlog</code> backup to recover, or clear the empty entries.
+          </p>
+          <Button kind="ghost" className="mt-2" onClick={cleanupMissing}>Clear {missingCount} unavailable</Button>
+        </div>
+      )}
+
       {compare && <p className="text-[13px] text-accent mb-3">Pick two photos to compare — {2 - compare.length} to go.</p>}
       {!thisWeekDone && photos.length > 0 && !compare && (
         <p className="text-[13px] text-mut mb-3">No shot logged this week yet.</p>
@@ -127,9 +164,12 @@ export function Photos() {
                         else if (compare.length < 2) setCompare([...compare, p]);
                       }}
                       className={cx('relative aspect-[3/4] rounded-xl overflow-hidden bg-surface2 border', selected ? 'border-accent ring-2 ring-accent' : 'border-edge')}>
-                      {urls[p.blob_key]
-                        ? <img src={urls[p.blob_key]} alt={p.date} className="w-full h-full object-cover" loading="lazy" />
-                        : <div className="w-full h-full flex items-center justify-center text-dim text-xs">…</div>}
+                      {typeof urls[p.blob_key] === 'string' && urls[p.blob_key] !== 'missing'
+                        ? <img src={urls[p.blob_key]} alt="" className="w-full h-full object-cover" loading="lazy"
+                            onError={() => markMissing(p.blob_key)} />
+                        : urls[p.blob_key] === 'missing'
+                          ? <div className="w-full h-full flex flex-col items-center justify-center text-dim text-[11px] gap-1 px-1 text-center"><span className="text-base">🚫</span>Image unavailable</div>
+                          : <div className="w-full h-full flex items-center justify-center text-dim text-xs">…</div>}
                       <span className="absolute bottom-0 inset-x-0 bg-black/60 text-[10px] text-white/90 px-1.5 py-0.5">{fmtDate(p.date)}</span>
                     </button>
                   );
@@ -154,7 +194,7 @@ export function Photos() {
 
       {/* single view */}
       {viewing && (
-        <PhotoViewer photo={viewing} url={urls[viewing.blob_key]} onClose={() => setViewing(null)}
+        <PhotoViewer photo={viewing} url={validPhotoUrl(urls, viewing.blob_key)} onClose={() => setViewing(null)}
           onDeleted={() => { setViewing(null); reload(); }} />
       )}
 
@@ -179,7 +219,9 @@ function PhotoViewer({ photo, url, onClose, onDeleted }: { photo: ProgressPhoto;
         <button onClick={onClose} className="w-8 h-8 rounded-full bg-surface2 text-mut">✕</button>
       </div>
       <div className="grow flex items-center justify-center px-2 min-h-0">
-        {url && <img src={url} alt={photo.date} className="max-w-full max-h-full object-contain rounded-lg" />}
+        {url
+          ? <img src={url} alt="" className="max-w-full max-h-full object-contain rounded-lg" />
+          : <span className="text-dim text-sm">Image data unavailable on this device</span>}
       </div>
       <div className="p-4 pb-[calc(env(safe-area-inset-bottom)+16px)]" onClick={(e) => e.stopPropagation()}>
         <Button kind="danger" className="w-full" onClick={async () => {
@@ -192,7 +234,7 @@ function PhotoViewer({ photo, url, onClose, onDeleted }: { photo: ProgressPhoto;
   );
 }
 
-function CompareView({ a, b, urls, onClose }: { a: ProgressPhoto; b: ProgressPhoto; urls: Record<string, string>; onClose: () => void }) {
+function CompareView({ a, b, urls, onClose }: { a: ProgressPhoto; b: ProgressPhoto; urls: PhotoState; onClose: () => void }) {
   const [wa, setWa] = useState<number | null>(null);
   const [wb, setWb] = useState<number | null>(null);
   useEffect(() => {
@@ -211,7 +253,9 @@ function CompareView({ a, b, urls, onClose }: { a: ProgressPhoto; b: ProgressPho
         {[{ p: first, w: wFirst }, { p: second, w: wSecond }].map(({ p, w }) => (
           <div key={p.id} className="flex flex-col min-h-0">
             <div className="grow min-h-0 flex items-center justify-center">
-              {urls[p.blob_key] && <img src={urls[p.blob_key]} alt={p.date} className="max-w-full max-h-full object-contain rounded-lg" />}
+              {validPhotoUrl(urls, p.blob_key)
+                ? <img src={validPhotoUrl(urls, p.blob_key)} alt="" className="max-w-full max-h-full object-contain rounded-lg" />
+                : <span className="text-dim text-xs">Image unavailable</span>}
             </div>
             <div className="text-center py-2">
               <div className="text-[13px] font-semibold">{fmtDate(p.date)}</div>

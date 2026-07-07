@@ -25,14 +25,20 @@ export type Exercise = {
 export type SetRow = {
   id: number; workout_exercise_id: number; position: number;
   set_type: 'warmup' | 'working' | 'dropset' | 'failure';
-  weight: number | null; reps: number | null; duration_s: number | null; rpe: number | null;
+  weight: number | null; reps: number | null; duration_s: number | null;
+  distance_m: number | null; incline: number | null; speed: number | null; avg_hr: number | null;
+  rpe: number | null;
   completed: number; completed_at: string | null;
+};
+export type PrevSet = {
+  set_type: string; weight: number; reps: number; duration_s: number | null;
+  distance_m: number | null; incline: number | null; speed: number | null; avg_hr: number | null; rpe: number | null;
 };
 export type WorkoutExercise = {
   id: number; workout_id: number; exercise_id: number; position: number;
   superset_group: number | null; rest_seconds: number; notes: string;
   exercise_name: string; muscle: string; equipment: string; exercise_type: string;
-  sets: SetRow[]; previous: { set_type: string; weight: number; reps: number; duration_s: number | null; rpe: number | null }[];
+  sets: SetRow[]; previous: PrevSet[];
 };
 export type Workout = {
   id: number; name: string; template_id: number | null;
@@ -564,8 +570,10 @@ export const api = {
       const db = getDb();
       const last = db.prepare('SELECT * FROM sets WHERE workout_exercise_id = ? ORDER BY position DESC LIMIT 1').get(id);
       const pos = last ? (last.position as number) + 1 : 0;
-      const sid = db.prepare('INSERT INTO sets (workout_exercise_id, position, set_type, weight, reps, duration_s) VALUES (?, ?, ?, ?, ?, ?)')
-        .run(id, pos, last ? (last.set_type === 'warmup' ? 'working' : last.set_type) : 'working', last ? last.weight : null, last ? last.reps : null, last ? last.duration_s : null).lastInsertRowid;
+      const sid = db.prepare('INSERT INTO sets (workout_exercise_id, position, set_type, weight, reps, duration_s, distance_m, incline, speed, avg_hr) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(id, pos, last ? (last.set_type === 'warmup' ? 'working' : last.set_type) : 'working',
+          last ? last.weight : null, last ? last.reps : null, last ? last.duration_s : null,
+          last ? last.distance_m : null, last ? last.incline : null, last ? last.speed : null, last ? last.avg_hr : null).lastInsertRowid;
       return db.prepare('SELECT * FROM sets WHERE id = ?').get(sid) as SetRow;
     },
   },
@@ -578,11 +586,16 @@ export const api = {
       if (!cur) throw new UserError('Set not found');
       const completed = body.completed !== undefined ? (body.completed ? 1 : 0) : (cur.completed as number);
       const setType = body.set_type != null && ['warmup', 'working', 'dropset', 'failure'].includes(body.set_type) ? body.set_type : null;
-      db.prepare('UPDATE sets SET set_type = COALESCE(?, set_type), weight = ?, reps = ?, duration_s = ?, rpe = ?, completed = ?, completed_at = ? WHERE id = ?')
+      const rndOrNull = (v: any, lo: number, hi: number) => body[v] !== undefined ? (numOrNull(body[v], lo, hi) != null ? Math.round(numOrNull(body[v], lo, hi)!) : null) : cur[v];
+      db.prepare('UPDATE sets SET set_type = COALESCE(?, set_type), weight = ?, reps = ?, duration_s = ?, distance_m = ?, incline = ?, speed = ?, avg_hr = ?, rpe = ?, completed = ?, completed_at = ? WHERE id = ?')
         .run(setType,
           body.weight !== undefined ? numOrNull(body.weight, 0, 2000) : cur.weight,
           body.reps !== undefined ? (numOrNull(body.reps, 0, 1000) != null ? Math.round(numOrNull(body.reps, 0, 1000)!) : null) : cur.reps,
-          body.duration_s !== undefined ? (numOrNull(body.duration_s, 0, 36000) != null ? Math.round(numOrNull(body.duration_s, 0, 36000)!) : null) : cur.duration_s,
+          body.duration_s !== undefined ? (numOrNull(body.duration_s, 0, 86400) != null ? Math.round(numOrNull(body.duration_s, 0, 86400)!) : null) : cur.duration_s,
+          body.distance_m !== undefined ? numOrNull(body.distance_m, 0, 1000000) : cur.distance_m,
+          body.incline !== undefined ? numOrNull(body.incline, -30, 40) : cur.incline,
+          body.speed !== undefined ? numOrNull(body.speed, 0, 100) : cur.speed,
+          rndOrNull('avg_hr', 0, 260),
           body.rpe !== undefined ? numOrNull(body.rpe, 1, 10) : cur.rpe,
           completed, completed ? (cur.completed_at || localISO()) : null, id);
       return db.prepare('SELECT * FROM sets WHERE id = ?').get(id) as SetRow;
@@ -645,6 +658,17 @@ export const api = {
       await ok();
       const f = from || localDate(new Date(Date.now() - 30 * 86400000));
       return getDb().prepare('SELECT * FROM garmin_daily WHERE date >= ? ORDER BY date').all(f) as GarminDaily[];
+    },
+    // Manual daily step entry. Upserts into the same garmin_daily row Garmin
+    // imports use, so a hand-typed count and later Garmin/wellness sync coexist
+    // (steps overwrite; other columns are preserved via COALESCE in importDaily).
+    setSteps: async (date: string, steps: number | null): Promise<GarminDaily | null> => {
+      await ok();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new UserError('Invalid date');
+      const s = numOrNull(steps, 0, 200000);
+      garminMod.importDaily([{ date, steps: s == null ? 0 : Math.round(s) }], 'manual');
+      await flush();
+      return getDb().prepare('SELECT * FROM garmin_daily WHERE date = ?').get(date) as GarminDaily ?? null;
     },
     demo: async (days = 30) => { await ok(); const r = await garminMod.generateDemo(days); await flush(); return r; },
     clear: async () => { await ok(); getDb().exec('DELETE FROM garmin_activities; DELETE FROM garmin_daily;'); await flush(); return { cleared: true }; },
@@ -737,6 +761,23 @@ export const api = {
       if (row) await photoStore.remove(row.blob_key as string);
       await flush();
       return { deleted: true };
+    },
+    // Delete metadata rows whose image bytes are gone/unreadable (e.g. the
+    // browser reclaimed the blob's backing storage). Returns count removed.
+    pruneMissing: async (): Promise<number> => {
+      await ok();
+      const rows = getDb().prepare('SELECT id, blob_key FROM progress_photos').all();
+      const dead: { id: number; blob_key: string }[] = [];
+      for (const r of rows) {
+        const b = await photoStore.get(r.blob_key as string);
+        if (!b || b.size === 0) dead.push({ id: r.id as number, blob_key: r.blob_key as string });
+      }
+      for (const d of dead) {
+        getDb().prepare('DELETE FROM progress_photos WHERE id = ?').run(d.id);
+        await photoStore.remove(d.blob_key);
+      }
+      if (dead.length) await flush();
+      return dead.length;
     },
     // bodyweight logged nearest (on or before) a date — shown next to photos
     nearestWeight: async (date: string): Promise<number | null> => {

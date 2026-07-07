@@ -28,6 +28,17 @@ export function openIdb(): Promise<IDBDatabase> {
   });
 }
 
+// Stored record shape. We persist raw bytes (ArrayBuffer) + mime type rather
+// than a Blob object. WebKit/iOS stores IndexedDB Blobs as separate backing
+// files that the browser can reclaim under storage pressure — the record then
+// survives but returns a zero-length/detached Blob, so images render broken
+// while metadata looks fine. ArrayBuffers are stored inline and don't detach.
+interface PhotoRecord { b: ArrayBuffer; t: string }
+
+function isRecord(v: any): v is PhotoRecord {
+  return v && typeof v === 'object' && v.b instanceof ArrayBuffer;
+}
+
 export class IdbPhotoStore implements PhotoStore {
   private tx<T>(mode: IDBTransactionMode, fn: (store: IDBObjectStore) => IDBRequest<T>): Promise<T> {
     return openIdb().then((idb) => new Promise<T>((resolve, reject) => {
@@ -37,8 +48,22 @@ export class IdbPhotoStore implements PhotoStore {
       tx.onerror = () => { reject(tx.error); idb.close(); };
     }));
   }
-  async put(key: string, blob: Blob) { await this.tx('readwrite', (s) => s.put(blob, key)); }
-  async get(key: string) { const r = await this.tx<any>('readonly', (s) => s.get(key)); return (r as Blob) || null; }
+  async put(key: string, blob: Blob) {
+    const buf = await blob.arrayBuffer();
+    const rec: PhotoRecord = { b: buf, t: blob.type || 'image/jpeg' };
+    await this.tx('readwrite', (s) => s.put(rec, key));
+  }
+  async get(key: string): Promise<Blob | null> {
+    const r = await this.tx<any>('readonly', (s) => s.get(key));
+    if (isRecord(r)) {
+      return r.b.byteLength > 0 ? new Blob([r.b], { type: r.t || 'image/jpeg' }) : null;
+    }
+    // Legacy entries were stored as Blob objects (pre-ArrayBuffer). If the
+    // backing bytes survived they're still usable; a detached/empty one counts
+    // as missing so the UI can show a real "unavailable" state, not a broken img.
+    if (r instanceof Blob) return r.size > 0 ? r : null;
+    return null;
+  }
   async remove(key: string) { await this.tx('readwrite', (s) => s.delete(key)); }
   async clear() { await this.tx('readwrite', (s) => s.clear()); }
   async keys() { return (await this.tx<any>('readonly', (s) => s.getAllKeys())) as string[]; }
