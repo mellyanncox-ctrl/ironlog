@@ -4,7 +4,7 @@ import { Sheet, TextInput, Button, Field, Select, Pill } from './ui';
 import { cap, cx, MUSCLE_COLORS } from '../util';
 import { EXERCISE_TYPES, EXERCISE_TYPE_LABELS } from '../db/schema';
 
-const TYPE_CHIP: Record<string, string> = { strength: 'Strength', dynamic: 'Dynamic', static: 'Static' };
+const TYPE_CHIP: Record<string, string> = { strength: 'Strength', dynamic: 'Dynamic', static: 'Static', cardio: 'Cardio' };
 
 export function ExercisePicker({ open, onClose, onPick, muscles, equipment }: {
   open: boolean; onClose: () => void; onPick: (e: Exercise) => void;

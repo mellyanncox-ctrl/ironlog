@@ -2,10 +2,10 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { api, Exercise, ExerciseStats } from '../api';
 import { Card, Spinner, Pill, Button, Sheet, Field, TextInput, Select, confirmDialog } from '../components/ui';
 import { LineChart, BarChart } from '../components/charts';
-import { cap, cx, fmtDate, fmtWeight, MUSCLE_COLORS, fmtVolume } from '../util';
+import { cap, cx, fmtDate, fmtWeight, MUSCLE_COLORS, fmtVolume, fmtCardio } from '../util';
 import { EXERCISE_TYPES, EXERCISE_TYPE_LABELS } from '../db/schema';
 
-const TYPE_CHIP: Record<string, string> = { strength: 'Strength', dynamic: 'Dynamic', static: 'Static' };
+const TYPE_CHIP: Record<string, string> = { strength: 'Strength', dynamic: 'Dynamic', static: 'Static', cardio: 'Cardio' };
 
 export function Library({ muscles, equipment, onNav }: { muscles: string[]; equipment: string[]; onNav: (r: string) => void }) {
   const [list, setList] = useState<Exercise[] | null>(null);
@@ -137,6 +137,7 @@ export function ExerciseDetail({ id, onNav, muscles, equipment }: { id: number; 
                     <span key={i} className={x.set_type === 'warmup' ? 'text-dim' : 'text-ink'}>
                       {ex.exercise_type === 'static' ? `${x.duration_s ?? '–'}s`
                         : ex.exercise_type === 'dynamic' ? `${x.reps ?? '–'} reps`
+                        : ex.exercise_type === 'cardio' ? fmtCardio(x)
                         : `${fmtWeight(x.weight, false)}×${x.reps}`}
                     </span>
                   ))}

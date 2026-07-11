@@ -66,6 +66,22 @@ export function fmtDistance(m: number | null | undefined): string {
   const v = getUnits() === 'lb' ? m / 1609.344 : m / 1000;
   return `${v >= 10 ? v.toFixed(1) : v.toFixed(2)} ${getUnits() === 'lb' ? 'mi' : 'km'}`;
 }
+// Unit label + divisor for cardio speed/distance, following the weight-unit setting.
+export function speedUnit() { return getUnits() === 'lb' ? 'mph' : 'km/h'; }
+export function distUnit() { return getUnits() === 'lb' ? 'mi' : 'km'; }
+export function distDiv() { return getUnits() === 'lb' ? 1609.344 : 1000; }
+
+// Compact one-line summary of a cardio set: speed · incline · time · distance · HR.
+// Skips any field that wasn't logged.
+export function fmtCardio(s: { duration_s?: number | null; distance_m?: number | null; incline?: number | null; speed?: number | null; avg_hr?: number | null }): string {
+  const parts: string[] = [];
+  if (s.speed != null) parts.push(`${s.speed} ${speedUnit()}`);
+  if (s.incline != null) parts.push(`${s.incline}%`);
+  if (s.duration_s != null) parts.push(fmtDuration(s.duration_s));
+  if (s.distance_m != null) parts.push(fmtDistance(s.distance_m));
+  if (s.avg_hr != null) parts.push(`♥${s.avg_hr}`);
+  return parts.length ? parts.join(' · ') : '—';
+}
 export function fmtPace(durationS: number | null | undefined, distanceM: number | null | undefined): string {
   if (!durationS || !distanceM || distanceM <= 0) return '—';
   const unitM = getUnits() === 'lb' ? 1609.344 : 1000;

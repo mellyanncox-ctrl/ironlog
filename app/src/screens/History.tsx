@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { api, WorkoutSummary, Workout, GarminActivity, PRRow } from '../api';
 import { Card, Pill, Empty, Button, Spinner, confirmDialog, Sheet, Field, TextInput } from '../components/ui';
-import { fmtDate, fmtTime, fmtVolume, fmtWeight, fmtDuration, fmtDistance, fmtPace, cx, kgOut, inKg, getUnits } from '../util';
+import { fmtDate, fmtTime, fmtVolume, fmtWeight, fmtDuration, fmtDistance, fmtPace, fmtCardio, cx, kgOut, inKg, getUnits } from '../util';
 
 type HistoryItem =
   | { kind: 'workout'; date: string; w: WorkoutSummary }
@@ -159,8 +159,13 @@ export function WorkoutDetail({ id, onNav, onDuplicated }: { id: number; onNav: 
                   <span className={cx('w-5 font-bold', s.set_type === 'warmup' ? 'text-blue' : s.set_type === 'failure' ? 'text-bad' : s.set_type === 'dropset' ? 'text-accent' : 'text-mut')}>
                     {s.set_type === 'warmup' ? 'W' : s.set_type === 'dropset' ? 'D' : s.set_type === 'failure' ? 'F' : i + 1}
                   </span>
-                  <span className="text-ink">{fmtWeight(s.weight)} × {s.reps ?? '–'}</span>
-                  {s.rpe != null && <span className="text-dim">@{s.rpe}</span>}
+                  <span className="text-ink">
+                    {we.exercise_type === 'cardio' ? fmtCardio(s)
+                      : we.exercise_type === 'static' ? `${s.duration_s ?? '–'}s hold`
+                      : we.exercise_type === 'dynamic' ? `${s.reps ?? '–'} reps`
+                      : `${fmtWeight(s.weight)} × ${s.reps ?? '–'}`}
+                  </span>
+                  {we.exercise_type !== 'cardio' && s.rpe != null && <span className="text-dim">@{s.rpe}</span>}
                 </div>
               ))}
             </div>

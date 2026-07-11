@@ -43,6 +43,9 @@ export function Home({ onStartTemplate, onStartBlank, onResume, activeId, onNav 
         <Stat label="PRs" value={ov ? ov.prs_this_month : '–'} sub="this month" accent />
       </Card>
 
+      {/* daily steps — manual entry that merges with Garmin's step data */}
+      <StepsCard daily={daily} onSaved={() => api.garmin.daily().then(setDaily).catch(() => {})} />
+
       {/* nutrition — connects training + food on the home screen */}
       {nutri && <NutritionCard day={nutri} onNav={onNav} />}
 
@@ -171,6 +174,41 @@ export function Home({ onStartTemplate, onStartBlank, onResume, activeId, onNav 
 
 function SectionTitle({ children }: { children: React.ReactNode }) {
   return <h2 className="text-[13px] font-semibold text-mut uppercase tracking-wide mb-2">{children}</h2>;
+}
+
+const STEP_GOAL = 10000;
+function StepsCard({ daily, onSaved }: { daily: GarminDaily[]; onSaved: () => void }) {
+  const today = todayISO();
+  const row = daily.find((d) => d.date === today);
+  const steps = row?.steps ?? null;
+  const pct = steps != null ? Math.min(100, Math.round((steps / STEP_GOAL) * 100)) : 0;
+
+  async function edit() {
+    const v = prompt("Today's step count:", steps != null ? String(steps) : '');
+    if (v === null) return;
+    const n = Math.round(Number(v.replace(/[, ]/g, '')));
+    if (!Number.isFinite(n) || n < 0) return;
+    await api.garmin.setSteps(today, n);
+    onSaved();
+  }
+
+  return (
+    <Card className="px-4 py-3" onClick={edit}>
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="text-[13px] text-mut">👣 Steps today</div>
+          <div className="text-[22px] font-bold tabular-nums leading-tight">
+            {steps != null ? steps.toLocaleString() : '—'}
+            <span className="text-[12px] text-dim font-normal ml-1.5">/ {STEP_GOAL.toLocaleString()}</span>
+          </div>
+        </div>
+        <span className="text-accent text-[13px] font-semibold">{steps != null ? 'Edit ›' : 'Log ›'}</span>
+      </div>
+      <div className="mt-2 h-1.5 rounded-full bg-surface2 overflow-hidden">
+        <div className="h-full rounded-full bg-accent transition-all" style={{ width: `${pct}%` }} />
+      </div>
+    </Card>
+  );
 }
 
 function NutritionCard({ day, onNav }: { day: DayView; onNav: (r: string) => void }) {

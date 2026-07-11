@@ -3,7 +3,7 @@ import { api, Workout, WorkoutExercise, SetRow, PREvent } from '../api';
 import { Button, Sheet, Field, TextInput, confirmDialog } from '../components/ui';
 import { ExercisePicker } from '../components/ExercisePicker';
 import { startRestTimer, clearRestTimer } from '../components/RestTimer';
-import { cx, fmtClock, fmtWeight, kgOut, inKg, getUnits } from '../util';
+import { cx, fmtClock, fmtWeight, kgOut, inKg, getUnits, fmtCardio, speedUnit, distUnit, distDiv } from '../util';
 
 const SET_TYPE_LABEL: Record<string, string> = { warmup: 'W', working: '', dropset: 'D', failure: 'F' };
 const SET_TYPE_COLOR: Record<string, string> = { warmup: 'text-blue', working: 'text-mut', dropset: 'text-accent', failure: 'text-bad' };
@@ -117,7 +117,8 @@ function ExerciseCard({ we, prev, onChange, workout, setW }: {
 }) {
   const [menu, setMenu] = useState(false);
   const ssColor = we.superset_group != null ? SS_COLORS[we.superset_group % SS_COLORS.length] : null;
-  const isStretch = we.exercise_type !== 'strength';
+  const isCardio = we.exercise_type === 'cardio';
+  const isStretch = we.exercise_type === 'dynamic' || we.exercise_type === 'static';
   const isStatic = we.exercise_type === 'static';
 
   async function toggleSuperset() {
@@ -150,7 +151,7 @@ function ExerciseCard({ we, prev, onChange, workout, setW }: {
 
       {/* sets table */}
       <div className="px-2 pb-2">
-        {isStretch ? (
+        {isCardio ? null : isStretch ? (
           <div className="grid grid-cols-[36px_1fr_1fr_40px] gap-1 px-2 py-1 text-[10.5px] uppercase tracking-wide text-dim font-medium">
             <span>Set</span><span>Previous</span><span className="text-center">{isStatic ? 'Hold (s)' : 'Reps'}</span><span></span>
           </div>
@@ -160,7 +161,9 @@ function ExerciseCard({ we, prev, onChange, workout, setW }: {
           </div>
         )}
         {we.sets.map((s, idx) => (
-          <SetLine key={s.id} s={s} idx={idx} we={we} onChange={onChange} workout={workout} setW={setW} />
+          isCardio
+            ? <CardioSetLine key={s.id} s={s} idx={idx} we={we} onChange={onChange} />
+            : <SetLine key={s.id} s={s} idx={idx} we={we} onChange={onChange} workout={workout} setW={setW} />
         ))}
         <button onClick={async () => { await api.workoutExercises.addSet(we.id); onChange(); }}
           className="w-full mt-1 py-2 rounded-xl bg-surface2 text-mut text-[13px] font-medium active:bg-edge">
@@ -339,6 +342,123 @@ function SetLine({ s, idx, we, onChange, workout, setW }: {
         className={cx('relative h-8 rounded-lg font-bold text-[15px] transition-colors', s.completed ? 'bg-good text-black' : 'bg-surface2 text-dim')}>
         ✓
       </button>
+      </div>
+    </div>
+  );
+}
+
+// A small labelled numeric field used only by cardio sets.
+function CardioField({ label, value, onChange, onBlur, placeholder, done }: {
+  label: string; value: string; onChange: (v: string) => void; onBlur: () => void;
+  placeholder?: string; done: boolean;
+}) {
+  return (
+    <div className="flex flex-col items-center">
+      <span className="text-[9px] uppercase tracking-wide text-dim mb-0.5 leading-none">{label}</span>
+      <input inputMode="decimal" value={value} placeholder={placeholder ?? '–'}
+        onChange={(e) => onChange(e.target.value)} onBlur={onBlur}
+        className={cx('h-8 w-full rounded-lg text-center text-[13.5px] font-semibold tabular-nums bg-surface2 outline-none focus:ring-1 focus:ring-accent/60', done && 'bg-transparent')} />
+    </div>
+  );
+}
+
+// Cardio set: logs speed, incline, time (min), distance and average HR — never
+// weight×reps — so it stays out of strength PR / volume / e1RM stats.
+function CardioSetLine({ s, idx, we, onChange }: {
+  s: SetRow; idx: number; we: WorkoutExercise; onChange: () => void;
+}) {
+  const div = distDiv();
+  const secToMin = (v: number | null | undefined) => (v == null ? '' : String(Math.round((v / 60) * 10) / 10));
+  const mToDist = (v: number | null | undefined) => (v == null ? '' : String(Math.round((v / div) * 100) / 100));
+
+  const [speed, setSpeed] = useState(s.speed != null ? String(s.speed) : '');
+  const [incline, setIncline] = useState(s.incline != null ? String(s.incline) : '');
+  const [time, setTime] = useState(secToMin(s.duration_s));
+  const [dist, setDist] = useState(mToDist(s.distance_m));
+  const [hr, setHr] = useState(s.avg_hr != null ? String(s.avg_hr) : '');
+  useEffect(() => {
+    setSpeed(s.speed != null ? String(s.speed) : '');
+    setIncline(s.incline != null ? String(s.incline) : '');
+    setTime(secToMin(s.duration_s)); setDist(mToDist(s.distance_m));
+    setHr(s.avg_hr != null ? String(s.avg_hr) : '');
+  }, [s.id, s.speed, s.incline, s.duration_s, s.distance_m, s.avg_hr]);
+
+  const [dx, setDx] = useState(0);
+  const swipe = useRef<{ x: number; y: number; active: boolean } | null>(null);
+  function onTouchStart(e: React.TouchEvent) { const t = e.touches[0]; swipe.current = { x: t.clientX, y: t.clientY, active: false }; }
+  function onTouchMove(e: React.TouchEvent) {
+    const st = swipe.current; if (!st) return;
+    const t = e.touches[0]; const mx = t.clientX - st.x, my = t.clientY - st.y;
+    if (!st.active) { if (Math.abs(mx) < 8 || Math.abs(mx) <= Math.abs(my)) return; st.active = true; }
+    e.preventDefault(); setDx(Math.max(-84, Math.min(0, mx)));
+  }
+  function onTouchEnd() { const st = swipe.current; swipe.current = null; if (!st?.active) return; setDx((d) => (d < -42 ? -76 : 0)); }
+
+  const prevSet = we.previous[idx];
+  const numOr = (v: string) => (v === '' ? null : Number(v));
+
+  function save(extra: any = {}) {
+    return api.sets.update(s.id, {
+      set_type: 'working', weight: null, reps: null, rpe: null,
+      speed: numOr(speed), incline: numOr(incline),
+      duration_s: time === '' ? null : Math.round(Number(time) * 60),
+      distance_m: dist === '' ? null : Math.round(Number(dist) * div),
+      avg_hr: numOr(hr),
+      ...extra,
+    });
+  }
+
+  async function toggleDone() {
+    const nowDone = !s.completed;
+    // when completing an empty field, carry the value forward from last time
+    let sp = speed, inc = incline, tm = time, ds = dist, h = hr;
+    if (nowDone && prevSet) {
+      if (sp === '' && prevSet.speed != null) { sp = String(prevSet.speed); setSpeed(sp); }
+      if (inc === '' && prevSet.incline != null) { inc = String(prevSet.incline); setIncline(inc); }
+      if (tm === '' && prevSet.duration_s != null) { tm = secToMin(prevSet.duration_s); setTime(tm); }
+      if (ds === '' && prevSet.distance_m != null) { ds = mToDist(prevSet.distance_m); setDist(ds); }
+      if (h === '' && prevSet.avg_hr != null) { h = String(prevSet.avg_hr); setHr(h); }
+    }
+    await api.sets.update(s.id, {
+      completed: nowDone, set_type: 'working', weight: null, reps: null, rpe: null,
+      speed: numOr(sp), incline: numOr(inc),
+      duration_s: tm === '' ? null : Math.round(Number(tm) * 60),
+      distance_m: ds === '' ? null : Math.round(Number(ds) * div),
+      avg_hr: numOr(h),
+    });
+    if (nowDone) startRestTimer(we.rest_seconds);
+    onChange();
+  }
+
+  async function removeSet() { await api.sets.remove(s.id); onChange(); }
+
+  return (
+    <div className="relative overflow-hidden rounded-lg mb-1">
+      <button onClick={removeSet}
+        className="absolute inset-y-0 right-0 w-[76px] flex items-center justify-center bg-bad text-white text-[12px] font-semibold"
+        style={{ opacity: dx < 0 ? 1 : 0 }}>
+        Delete
+      </button>
+      <div
+        onTouchStart={onTouchStart} onTouchMove={onTouchMove} onTouchEnd={onTouchEnd}
+        style={{ transform: `translateX(${dx}px)`, transition: swipe.current ? 'none' : 'transform 0.18s ease' }}
+        className="relative bg-surface rounded-lg px-2 py-1.5">
+        {s.completed ? <span className="absolute inset-0 rounded-lg bg-good/10 pointer-events-none" /> : null}
+        <div className="relative grid grid-cols-[20px_repeat(5,1fr)_28px] gap-1 items-end">
+          <span className="h-8 flex items-center justify-center text-[13px] font-bold text-mut">{idx + 1}</span>
+          <CardioField label={speedUnit()} value={speed} onChange={setSpeed} onBlur={() => save()} placeholder={prevSet?.speed != null ? String(prevSet.speed) : ''} done={!!s.completed} />
+          <CardioField label="incl %" value={incline} onChange={setIncline} onBlur={() => save()} placeholder={prevSet?.incline != null ? String(prevSet.incline) : ''} done={!!s.completed} />
+          <CardioField label="time m" value={time} onChange={setTime} onBlur={() => save()} placeholder={prevSet?.duration_s != null ? secToMin(prevSet.duration_s) : ''} done={!!s.completed} />
+          <CardioField label={distUnit()} value={dist} onChange={setDist} onBlur={() => save()} placeholder={prevSet?.distance_m != null ? mToDist(prevSet.distance_m) : ''} done={!!s.completed} />
+          <CardioField label="hr" value={hr} onChange={setHr} onBlur={() => save()} placeholder={prevSet?.avg_hr != null ? String(prevSet.avg_hr) : ''} done={!!s.completed} />
+          <button onClick={toggleDone}
+            className={cx('h-8 rounded-lg font-bold text-[15px] transition-colors', s.completed ? 'bg-good text-black' : 'bg-surface2 text-dim')}>
+            ✓
+          </button>
+        </div>
+        {prevSet && (prevSet.speed != null || prevSet.duration_s != null || prevSet.distance_m != null) && (
+          <div className="text-[11px] text-dim truncate pl-[22px] pt-0.5">prev: {fmtCardio(prevSet)}</div>
+        )}
       </div>
     </div>
   );
