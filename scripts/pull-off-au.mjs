@@ -23,8 +23,8 @@ import { parseOFF, loadApp } from './build-food-seed.mjs';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const args = Object.fromEntries(process.argv.slice(2).map((a, i, all) => a.startsWith('--') ? [a.slice(2), all[i + 1] && !all[i + 1].startsWith('--') ? all[i + 1] : true] : null).filter(Boolean));
-const PAGES_ALL = Number(args.pages) || 6;
-const PAGES_BEV = Number(args['bev-pages']) || 4;
+const PAGES_ALL = args.pages !== undefined ? Number(args.pages) : 6;
+const PAGES_BEV = args['bev-pages'] !== undefined ? Number(args['bev-pages']) : 4;
 const OUT = path.join(root, 'app/src/db/foods-off-au.generated.json');
 
 const UA = 'Ironlog-food-seed/1.0 (contact: hello@theserviceedit.com)';
