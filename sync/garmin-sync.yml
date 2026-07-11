@@ -4,7 +4,12 @@ name: Garmin sync
 
 on:
   schedule:
-    - cron: '17 * * * *'   # hourly (off the top of the hour — GitHub throttles :00)
+    # Six spread attempts a day at an odd minute. Garmin 429s are tied to the
+    # runner's IP and each run draws a fresh IP, so more runs = more lottery
+    # tickets; the script fails fast (~3 min max) and skips green on 429, so
+    # persistent rate-limiting costs little and any one success lands the
+    # day's data in sync.json.
+    - cron: '7 1,5,9,13,17,21 * * *'
   workflow_dispatch:
     inputs:
       backfill:
@@ -22,10 +27,11 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 

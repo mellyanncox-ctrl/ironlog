@@ -71,6 +71,12 @@ token, hit **Save & sync**. Done. The app now pulls on every launch.
 - **Unofficial API**: Garmin can break this at any time — it's the same mechanism
   every third-party Garmin tool uses. If sync stops, check the Actions log; a
   failed token usually just means re-running `login` and updating the secret.
+- **Rate limiting (429)**: since mid-2026 Garmin's Cloudflare blocks
+  python-requests from datacenter IPs on the token exchange. The script routes
+  the exchange through curl_cffi (Chrome TLS impersonation) to get past this,
+  runs 4×/day, and on a persistent 429 **skips cleanly (green run + warning)**
+  rather than failing — a red run now always means something real (e.g. a dead
+  token needing re-login).
 - **Token expiry**: the Garmin OAuth token lasts about a year; the GitHub
   fine-grained token expires per what you chose. Both are 2-minute fixes.
 - **Scheduled workflows pause** after 60 days without repo activity; sync commits

@@ -1,3 +1,8 @@
 # Pinned: 0.7+ uses a login route Garmin's Cloudflare fingerprinting blocks
 # (see sync/README.md). Token refresh works identically on 0.6.3.
 garth==0.6.3
+# Chrome TLS-fingerprint impersonation for the OAuth token exchange — Garmin's
+# Cloudflare 429s python-requests from datacenter IPs (GitHub runners) since
+# mid-2026. oauthlib signs the OAuth1 request we send through curl_cffi.
+curl_cffi>=0.7
+oauthlib>=3.2

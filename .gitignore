@@ -9,3 +9,4 @@ vite.config.mts.timestamp-*.mjs
 
 .fuse_hidden*
 tests/.build2/
+__pycache__/

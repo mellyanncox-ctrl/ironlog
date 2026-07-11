@@ -30,10 +30,12 @@ import base64
 import getpass
 import json
 import os
+import random
 import sys
 import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import urlencode
 
 import garth
 
@@ -100,12 +102,116 @@ def authed_client() -> None:
     token = os.environ.get("GARTH_TOKEN", "").strip()
     if token:
         garth.client.loads(token)
-        return
-    token_dir = os.environ.get("GARTH_TOKEN_DIR") or str(Path.home() / ".ironlog-garth")
-    if Path(token_dir).exists():
-        garth.resume(token_dir)
-        return
-    sys.exit("No credentials: set GARTH_TOKEN (from `garmin_sync.py login`) or run login first.")
+    else:
+        token_dir = os.environ.get("GARTH_TOKEN_DIR") or str(Path.home() / ".ironlog-garth")
+        if Path(token_dir).exists():
+            garth.resume(token_dir)
+        else:
+            sys.exit("No credentials: set GARTH_TOKEN (from `garmin_sync.py login`) or run login first.")
+    if os.environ.get("GITHUB_ACTIONS"):
+        # De-sync from other cron jobs hitting Garmin at the same minute.
+        time.sleep(random.uniform(0, 20))
+    _refresh_with_backoff()
+
+
+class _RateLimited(Exception):
+    def __init__(self, retry_after: float | None = None):
+        super().__init__("429")
+        self.retry_after = retry_after
+
+
+def _exchange_impersonated() -> bool:
+    """OAuth1→OAuth2 token exchange with a real-Chrome TLS fingerprint.
+
+    Why this exists: garth's own exchange sends a Garmin-mobile User-Agent from
+    python-requests, and since mid-2026 Cloudflare 429s that combination from
+    datacenter IPs (GitHub runners) on nearly every request — the July 2026 log
+    was 429 on all 5 retries, every run. curl_cffi impersonates Chrome's TLS
+    fingerprint, which is the piece the UA header alone can't fake.
+
+    Returns True on success (garth.client.oauth2_token set), False when
+    curl_cffi isn't installed (caller falls back to garth's native refresh).
+    Raises _RateLimited on 429 so the caller can back off.
+    """
+    try:
+        from curl_cffi import requests as curl
+        from oauthlib.oauth1 import Client as OAuth1Signer
+    except ImportError:
+        return False
+    import garth.sso as sso
+    from garth.auth_tokens import OAuth2Token
+
+    o1 = garth.client.oauth1_token
+    if not sso.OAUTH_CONSUMER:
+        sso.OAUTH_CONSUMER = curl.get(sso.OAUTH_CONSUMER_URL, impersonate="chrome", timeout=15).json()
+    signer = OAuth1Signer(
+        sso.OAUTH_CONSUMER["consumer_key"],
+        sso.OAUTH_CONSUMER["consumer_secret"],
+        resource_owner_key=o1.oauth_token,
+        resource_owner_secret=o1.oauth_token_secret,
+    )
+    domain = getattr(o1, "domain", None) or "garmin.com"
+    url = f"https://connectapi.{domain}/oauth-service/oauth/exchange/user/2.0"
+    body = urlencode({"mfa_token": o1.mfa_token}) if getattr(o1, "mfa_token", None) else ""
+    uri, headers, body = signer.sign(
+        url, http_method="POST", body=body,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    resp = curl.post(uri, headers=dict(headers), data=body, impersonate="chrome", timeout=30)
+    if resp.status_code == 429:
+        ra = resp.headers.get("Retry-After")
+        raise _RateLimited(float(ra) if ra and str(ra).isdigit() else None)
+    resp.raise_for_status()
+    garth.client.oauth2_token = OAuth2Token(**sso.set_expirations(resp.json()))
+    return True
+
+
+def _refresh_with_backoff(attempts: int = 3) -> None:
+    """Force the OAuth2 refresh up front, retrying briefly on 429.
+
+    Strategy per attempt: Chrome-impersonated exchange (curl_cffi) when
+    available, otherwise garth's native refresh. Garmin's 429 blocks are tied
+    to the runner's IP (July 2026: 5/5 retries failed across 9 minutes on one
+    IP), so long in-job retries are wasted minutes — each RUN gets a fresh
+    runner IP, which is the actual lottery. Hence: fail fast here, schedule
+    many runs per day, and on persistent 429 exit 0 (skip, not red) — the
+    token is still valid. Real auth errors (401/403) still fail loudly,
+    because those mean the token is dead and needs a re-login.
+    """
+    waits = [45, 90]  # fail fast; the next scheduled run has better odds (new IP)
+    for attempt in range(attempts):
+        try:
+            try:
+                done = _exchange_impersonated()
+            except _RateLimited:
+                raise
+            except Exception as imp_err:  # noqa: BLE001
+                # Non-429 failure on the impersonated path (endpoint drift,
+                # curl error): fall back to garth's native exchange.
+                print(f"  impersonated exchange failed ({imp_err}) — falling back to garth",
+                      file=sys.stderr)
+                done = False
+            if not done:
+                garth.client.refresh_oauth2()
+            return
+        except Exception as e:  # noqa: BLE001
+            is_429 = isinstance(e, _RateLimited) or "429" in str(e)
+            if not is_429:
+                raise
+            if attempt < attempts - 1:
+                ra = getattr(e, "retry_after", None)
+                wait = ra if ra else waits[min(attempt, len(waits) - 1)] * random.uniform(0.8, 1.2)
+                print(f"  token exchange rate-limited (429) — retry {attempt + 1}/{attempts} in {int(wait)}s",
+                      file=sys.stderr)
+                time.sleep(wait)
+                continue
+            # Exhausted retries on 429: skip this run instead of failing it.
+            msg = ("Garmin rate-limited the token refresh (429) after retries. The token is still "
+                   "valid — skipping this run; the next scheduled run will retry.")
+            if os.environ.get("GITHUB_ACTIONS"):
+                print(f"::warning title=Garmin sync skipped::{msg}")
+            print(msg, file=sys.stderr)
+            sys.exit(0)
 
 
 def fetch_activities(limit: int | None) -> list[dict]:
