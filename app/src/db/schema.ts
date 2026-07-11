@@ -2,6 +2,10 @@
 import { getDb } from './sqlite';
 import { FOOD_SEED } from './foods-seed';
 import { AU_FOODS } from './foods-au';
+// Open Food Facts AU layer (ODbL, attributed via source_ref 'OFF:<barcode>').
+// Regenerate with: node scripts/pull-off-au.mjs — see docs/food-data-sources.md.
+import OFF_AU_FOODS from './foods-off-au.generated.json';
+import { ALCOHOL_FOODS } from './foods-alcohol';
 import { normalizeFood, dedupeKey, type RawFood } from './foods-normalize';
 import { localISO } from './dates';
 
@@ -61,7 +65,11 @@ CREATE TABLE IF NOT EXISTS sets (
   set_type TEXT NOT NULL DEFAULT 'working',
   weight REAL,
   reps INTEGER,
-  duration_s INTEGER,          -- hold time in seconds (static/dynamic stretches)
+  duration_s INTEGER,          -- hold time / cardio time in seconds (stretches + cardio)
+  distance_m REAL,             -- cardio distance in metres
+  incline REAL,                -- cardio incline / grade (%)
+  speed REAL,                  -- cardio speed (km/h or mph, per user units)
+  avg_hr INTEGER,              -- cardio average heart rate (bpm)
   rpe REAL,
   completed INTEGER NOT NULL DEFAULT 0,
   completed_at TEXT
@@ -310,10 +318,10 @@ export const EQUIPMENT = ['barbell', 'dumbbell', 'machine', 'cable', 'bodyweight
 // 'dynamic' = dynamic/mobility stretch logged as reps; 'static' = static stretch
 // held for time (logged as a duration in seconds). Stretches carry a null weight,
 // so PRs, volume and e1RM stats — which filter `weight IS NOT NULL` — ignore them.
-export const EXERCISE_TYPES = ['strength', 'dynamic', 'static'] as const;
+export const EXERCISE_TYPES = ['strength', 'dynamic', 'static', 'cardio'] as const;
 export type ExerciseType = typeof EXERCISE_TYPES[number];
 export const EXERCISE_TYPE_LABELS: Record<string, string> = {
-  strength: 'Strength', dynamic: 'Dynamic stretch', static: 'Static stretch',
+  strength: 'Strength', dynamic: 'Dynamic stretch', static: 'Static stretch', cardio: 'Cardio',
 };
 
 // Curated warm-up (dynamic) and cool-down (static) stretch library. Muscles are
@@ -361,6 +369,27 @@ const STRETCH_SEED: [string, string, string, string, ExerciseType][] = [
   ['Neck Side Stretch', 'shoulders', '', 'bodyweight', 'static'],
 ];
 
+// Built-in cardio / conditioning library. Cardio sets log time, distance, incline,
+// speed and average HR (never weight×reps), so PRs, volume and e1RM — which filter
+// `weight IS NOT NULL` — ignore them automatically. Muscles are mapped onto the
+// existing MUSCLES taxonomy (the primary movers) so the muscle filter still works.
+// Tuple: [name, muscle, secondary, equipment]
+const CARDIO_SEED: [string, string, string, string][] = [
+  ['Treadmill', 'quads', 'calves,hamstrings', 'machine'],
+  ['Treadmill Incline Walk', 'glutes', 'quads,calves', 'machine'],
+  ['Running (Outdoor)', 'quads', 'calves,hamstrings', 'bodyweight'],
+  ['Walking', 'quads', 'calves', 'bodyweight'],
+  ['Hiking', 'quads', 'glutes,calves', 'bodyweight'],
+  ['Stationary Bike', 'quads', 'glutes,calves', 'machine'],
+  ['Cycling (Outdoor)', 'quads', 'glutes,calves', 'other'],
+  ['Assault Bike', 'quads', 'shoulders,back', 'machine'],
+  ['Rowing Machine', 'back', 'quads,biceps,core', 'machine'],
+  ['Elliptical', 'quads', 'glutes,calves', 'machine'],
+  ['Stair Climber', 'glutes', 'quads,calves', 'machine'],
+  ['Jump Rope', 'calves', 'quads,shoulders', 'bodyweight'],
+  ['Swimming', 'back', 'shoulders,core', 'other'],
+];
+
 export function migrate(): void {
   const db = getDb();
   db.exec('PRAGMA foreign_keys = ON;');
@@ -385,14 +414,31 @@ export function migrate(): void {
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_foods_dedupe ON foods(dedupe_key)'); } catch { /* noop */ }
   try { db.exec("ALTER TABLE exercises ADD COLUMN exercise_type TEXT NOT NULL DEFAULT 'strength'"); } catch { /* already there */ }
   try { db.exec('ALTER TABLE sets ADD COLUMN duration_s INTEGER'); } catch { /* already there */ }
+  // Cardio (July 2026): additive set columns for treadmill/bike/row/etc.
+  for (const col of ['distance_m REAL', 'incline REAL', 'speed REAL', 'avg_hr INTEGER']) {
+    try { db.exec(`ALTER TABLE sets ADD COLUMN ${col}`); } catch { /* already there */ }
+  }
   const n = db.prepare('SELECT COUNT(*) AS n FROM exercises').get()!.n as number;
   if (n === 0) {
     const ins = db.prepare('INSERT INTO exercises (name, muscle, secondary, equipment) VALUES (?, ?, ?, ?)');
     for (const [name, muscle, secondary, equipment] of SEED) ins.run(name, muscle, secondary, equipment);
   }
   seedStretches();
+  seedCardio();
   backfillFoods();
   seedFoods();
+}
+
+// Seed the built-in cardio library once. Idempotent: only inserts when no cardio
+// exercises exist yet, so existing databases pick these up on their next
+// migrate() and custom exercises are never touched. INSERT OR IGNORE skips any
+// name that collides with a user's custom exercise.
+export function seedCardio(): void {
+  const db = getDb();
+  const have = db.prepare("SELECT COUNT(*) AS n FROM exercises WHERE exercise_type = 'cardio'").get()!.n as number;
+  if (have > 0) return;
+  const ins = db.prepare('INSERT OR IGNORE INTO exercises (name, muscle, secondary, equipment, exercise_type) VALUES (?, ?, ?, ?, ?)');
+  for (const [name, muscle, secondary, equipment] of CARDIO_SEED) ins.run(name, muscle, secondary, equipment, 'cardio');
 }
 
 // Seed the built-in stretch library once. Idempotent: only inserts when no
@@ -410,17 +456,22 @@ export function seedStretches(): void {
 
 // Insert one normalised food. Skips when an active food already shares its
 // dedupe_key, so re-running migrate (or seeding the AU set onto an existing
-// library) never creates duplicates. Returns 1 if inserted, 0 if skipped.
+// library) never creates duplicates. When the duplicate lacks a barcode and
+// the incoming row has one, the barcode is attached to the existing row —
+// that's how curated foods become scannable. Returns 1 if inserted, 0 if not.
 function insertFood(db: any, raw: RawFood, now: string): 0 | 1 {
   const f = normalizeFood(raw);
-  const dup = db.prepare('SELECT 1 FROM foods WHERE dedupe_key = ? AND archived = 0 LIMIT 1').get(f.dedupe_key);
-  if (dup) return 0;
+  const dup = db.prepare('SELECT id, barcode FROM foods WHERE dedupe_key = ? AND archived = 0 LIMIT 1').get(f.dedupe_key) as { id: number; barcode: string | null } | undefined;
+  if (dup) {
+    if (f.barcode && !dup.barcode) db.prepare('UPDATE foods SET barcode = ?, updated_at = ? WHERE id = ?').run(f.barcode, now, dup.id);
+    return 0;
+  }
   db.prepare(`INSERT INTO foods
     (name, brand, serving_desc, serving_grams, kcal, kj, protein, carbs, fat, fibre, sugar, sodium,
-     source, source_ref, verified, confidence, dedupe_key, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+     barcode, source, source_ref, verified, confidence, dedupe_key, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
     f.name, f.brand, f.serving_desc, f.serving_grams, f.kcal, f.kj, f.protein, f.carbs, f.fat,
-    f.fibre, f.sugar, f.sodium, f.source, f.source_ref, f.verified, f.confidence, f.dedupe_key, now, now);
+    f.fibre, f.sugar, f.sodium, f.barcode, f.source, f.source_ref, f.verified, f.confidence, f.dedupe_key, now, now);
   return 1;
 }
 
@@ -439,6 +490,19 @@ export function seedFoods(): void {
   const haveAu = db.prepare("SELECT COUNT(*) AS n FROM foods WHERE source = 'au'").get()!.n as number;
   if (haveAu === 0) {
     for (const f of AU_FOODS) insertFood(db, f, now);
+  }
+  const haveAlc = db.prepare("SELECT COUNT(*) AS n FROM foods WHERE source = 'alc'").get()!.n as number;
+  if (haveAlc === 0) {
+    for (const f of ALCOHOL_FOODS) insertFood(db, f, now);
+  }
+  // OFF AU layer: seeded by VERSION rather than count so a regenerated pull
+  // (more products) reaches existing users on their next migrate(). insertFood
+  // dedupes and attaches barcodes to existing curated rows, so re-seeding is
+  // safe and makes previously bundled foods scannable.
+  const offVersion = String((OFF_AU_FOODS as any[]).length);
+  if (offVersion !== '0' && getSetting('off_au_seed_version', '') !== offVersion) {
+    for (const f of OFF_AU_FOODS as RawFood[]) insertFood(db, { ...f, source: 'off' }, now);
+    setSetting('off_au_seed_version', offVersion);
   }
 }
 

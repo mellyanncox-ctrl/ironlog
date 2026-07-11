@@ -31,7 +31,7 @@ const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const args = parseArgs(process.argv.slice(2));
 
 // ── Load the app's real modules through esbuild (single source of truth) ──────
-async function loadApp() {
+export async function loadApp() {
   const entry = path.join(os.tmpdir(), `ironlog-foodseed-${Date.now()}.ts`);
   writeFileSync(entry, `
     export { AU_FOODS } from ${JSON.stringify(path.join(root, 'app/src/db/foods-au.ts'))};
@@ -47,27 +47,37 @@ async function loadApp() {
 
 // Open Food Facts: JSONL (one product/line) or a JSON array. We only keep AU-
 // relevant, usable rows and map to RRawFood. Attribution: source_ref 'OFF:<code>'.
-function parseOFF(text, limit) {
+export function parseOFF(text, limit) {
   const lines = text.trim().startsWith('[') ? JSON.parse(text) : text.split('\n').filter(Boolean).map((l) => JSON.parse(l));
   const out = [];
   for (const p of lines) {
     if (out.length >= limit) break;
     const n = p.nutriments || {};
-    const kcal = num(n['energy-kcal_serving']) ?? num(n['energy-kcal_100g']);
-    const name = String(p.product_name || '').trim();
-    if (!name || kcal == null) continue;
-    const per100 = num(n['energy-kcal_serving']) == null;
+    const name = String(p.product_name || p.product_name_en || '').trim();
+    if (!name) continue;
+    const perMl = String(p.nutrition_data_per || '').includes('ml'); // drinks: per-100 basis is 100 ml
+    // energy: kcal preferred, kJ accepted (AU labels are kJ-first — dropping
+    // kJ-only rows would silently exclude most Australian drinks)
+    let kcalServing = num(n['energy-kcal_serving']);
+    if (kcalServing == null) { const kj = num(n['energy-kj_serving'] ?? n['energy_serving']); if (kj != null) kcalServing = kj / 4.184; }
+    let kcal100 = num(n['energy-kcal_100g']);
+    if (kcal100 == null) { const kj = num(n['energy_100g'] ?? n['energy-kj_100g']); if (kj != null) kcal100 = kj / 4.184; }
+    const per100 = kcalServing == null;
+    const kcal = per100 ? kcal100 : kcalServing;
+    if (kcal == null) continue;
     const grams = per100 ? 100 : num(p.serving_quantity);
+    // per-serving macros, deriving from per-100 when OFF only has those
+    const scaled = (svKey, hKey) => num(per100 ? n[hKey] : n[svKey]) ?? (per100 || grams == null ? null : (num(n[hKey]) != null ? (num(n[hKey]) * grams) / 100 : null));
     out.push({
       name, brand: String(p.brands || '').split(',')[0].trim(),
-      serving: per100 ? '100 g' : (p.serving_size || `${grams || ''} g`).trim() || '1 serving',
-      grams, kcal,
-      protein: num(per100 ? n.proteins_100g : n.proteins_serving) ?? 0,
-      carbs: num(per100 ? n.carbohydrates_100g : n.carbohydrates_serving) ?? 0,
-      fat: num(per100 ? n.fat_100g : n.fat_serving) ?? 0,
-      fibre: num(per100 ? n.fiber_100g : n.fiber_serving),
-      sugar: num(per100 ? n.sugars_100g : n.sugars_serving),
-      sodium: sodiumMg(n, per100),
+      serving: per100 ? (perMl ? '100 ml' : '100 g') : (p.serving_size || `${grams || ''} ${perMl ? 'ml' : 'g'}`).trim() || '1 serving',
+      grams, kcal: Math.round(kcal * 10) / 10,
+      protein: scaled('proteins_serving', 'proteins_100g') ?? 0,
+      carbs: scaled('carbohydrates_serving', 'carbohydrates_100g') ?? 0,
+      fat: scaled('fat_serving', 'fat_100g') ?? 0,
+      fibre: scaled('fiber_serving', 'fiber_100g'),
+      sugar: scaled('sugars_serving', 'sugars_100g'),
+      sodium: sodiumMg(n, per100, grams),
       barcode: String(p.code || '').replace(/\D/g, '') || null,
       source: 'off', source_ref: p.code ? `OFF:${p.code}` : 'OFF', confidence: 'medium',
     });
@@ -151,8 +161,9 @@ function mergeByKey(rows, dedupeKey) {
   return { list: [...map.values()], merged };
 }
 
-// ── Run ───────────────────────────────────────────────────────────────────────
-(async () => {
+// ── Run (only when executed directly — pull-off-au.mjs imports parseOFF) ─────
+const invokedDirectly = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (invokedDirectly) (async () => {
   const app = await loadApp();
   const { normalizeFood, energySanity, dedupeKey, AU_FOODS, FOOD_SEED } = app;
   const limit = args.limit ? Number(args.limit) : Infinity;
@@ -210,9 +221,13 @@ function parseArgs(a) {
   return o;
 }
 function num(v) { const n = Number(v); return Number.isFinite(n) ? n : null; }
-function sodiumMg(n, per100) {
+function sodiumMg(n, per100, grams = null) {
   const s = num(per100 ? n.sodium_100g : n.sodium_serving); if (s != null) return Math.round(s * 1000);
   const salt = num(per100 ? n.salt_100g : n.salt_serving); if (salt != null) return Math.round((salt / 2.5) * 1000);
+  if (!per100 && grams != null) { // derive per-serving sodium from per-100 values
+    const s100 = num(n.sodium_100g); if (s100 != null) return Math.round((s100 * 1000 * grams) / 100);
+    const salt100 = num(n.salt_100g); if (salt100 != null) return Math.round(((salt100 / 2.5) * 1000 * grams) / 100);
+  }
   return null;
 }
 function titleCase(s) { return s.toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase()); }

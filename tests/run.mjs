@@ -18,7 +18,8 @@ for (const suite of suites) {
   try {
     execSync(
       `npx esbuild "${path.join(root, 'tests', suite)}" --bundle --platform=node --jsx=automatic ` +
-      `--loader:.css=empty --loader:.wasm=file --external:sql.js --external:jsdom --outfile="${outfile}"`,
+      `--loader:.css=empty --loader:.wasm=file --external:sql.js --external:jsdom ` +
+      `--external:zxing-wasm --external:zxing-wasm/* --outfile="${outfile}"`,
       { cwd: root, stdio: ['ignore', 'ignore', 'inherit'] }
     );
     execSync(`node "${outfile}"`, { cwd: root, stdio: 'inherit' });

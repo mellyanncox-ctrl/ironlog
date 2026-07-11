@@ -421,6 +421,29 @@ async function throws(fn: () => Promise<any>, name: string, match?: RegExp) {
   ok(d2 && d2.serving_desc === '100 g' && d2.kcal === 64 && d2.sodium === 40, `OFF per-100g + salt→sodium (${d2?.sodium} mg)`);
   ok(parseOffProduct({ status: 0 }) === null, 'not-found product parses to null');
   ok(parseOffProduct({ status: 1, product: { product_name: 'No energy', nutriments: {} } }) === null, 'product without energy parses to null');
+  // drinks: kJ-only per-serving energy (AU labels), per-100ml basis, macros derived from per-100
+  const offDrinkKj = { status: 1, product: { code: '9300100', product_name: 'Energy Drink', brands: 'Volt', serving_size: '1 can (500 ml)', serving_quantity: 500, nutrition_data_per: '100ml', nutriments: { energy_serving: 963, sugars_100g: 10.5, carbohydrates_100g: 10.8, proteins_100g: 0, fat_100g: 0, sodium_100g: 0.04 } } };
+  const d3 = parseOffProduct(offDrinkKj)!;
+  ok(d3 != null && d3.kcal === 230 && d3.serving_desc === '1 can (500 ml)', `kJ-only per-serving drink converts to kcal (${d3?.kcal})`);
+  ok(d3.carbs === 54 && d3.sugar === 52.5 && d3.sodium === 200, `serving macros derived from per-100ml values (carbs ${d3.carbs}, sugar ${d3.sugar}, sodium ${d3.sodium})`);
+  const offDrink100ml = { status: 1, product: { code: '9300101', product_name: 'Cola', brands: '', nutrition_data_per: '100ml', nutriments: { 'energy-kcal_100g': 42, carbohydrates_100g: 10.6, sugars_100g: 10.6 } } };
+  const d4 = parseOffProduct(offDrink100ml)!;
+  ok(d4 != null && d4.serving_desc === '100 ml' && d4.kcal === 42, `per-100ml drink labelled as 100 ml (${d4?.serving_desc})`);
+  const offZero = { status: 1, product: { code: '9300102', product_name: 'Diet Cola', nutrition_data_per: '100ml', nutriments: { 'energy-kcal_100g': 0, carbohydrates_100g: 0 } } };
+  ok(parseOffProduct(offZero)?.kcal === 0, 'zero-calorie drink parses (0 kcal is valid, not missing)');
+  const offNameEn = { status: 1, product: { code: '9300103', product_name: '', product_name_en: 'Sparkling Water', nutriments: { 'energy-kcal_100g': 0 } } };
+  ok(parseOffProduct(offNameEn)?.name === 'Sparkling Water', 'falls back to product_name_en when product_name is empty');
+  // alcohol: most jurisdictions don't require nutrition panels, so OFF entries
+  // often carry only ABV. Energy must be estimated (ethanol 7 kcal/g, 0.789 g/ml)
+  // and the pack size ("330 ml") used as the serving — previously "not found".
+  const offAbv = { status: 1, product: { code: '9400000', product_name: 'Vodka Lime & Soda', brands: 'Pals', nutrition_data_per: '100ml', quantity: '330 ml', nutriments: { alcohol_100g: 5, carbohydrates_100g: 1.2, sugars_100g: 0.8 } } };
+  const d5 = parseOffProduct(offAbv)!;
+  ok(d5 != null && d5.kcal === 107 && d5.serving_grams === 330 && d5.serving_desc === '330 ml', `ABV-only alcohol gets estimated energy + pack-size serving (${JSON.stringify(d5)})`);
+  ok(d5.carbs === 4 && d5.sugar === 2.6, `ABV-only macros scale to the can (carbs ${d5.carbs}, sugar ${d5.sugar})`);
+  // per-100 energy + known serving but no per-serving energy → synthesise per-serving
+  const offCan = { status: 1, product: { code: '9400001', product_name: 'Lager', nutrition_data_per: '100ml', serving_size: '1 can (375 ml)', serving_quantity: 375, nutriments: { 'energy-kcal_100g': 43, carbohydrates_100g: 3.2 } } };
+  const d6 = parseOffProduct(offCan)!;
+  ok(d6 != null && d6.kcal === 161 && d6.serving_desc === '1 can (375 ml)' && d6.carbs === 12, `per-100-only drink with a known serving logs as one can (${d6?.kcal} kcal)`);
 
   const fakeOff = (body: any, status = 200) => (async () => ({ ok: status >= 200 && status < 300, status, json: async () => body })) as unknown as typeof fetch;
   const fetched = await fetchOpenFoodFacts('5000000000000', fakeOff(offServing));
@@ -437,6 +460,15 @@ async function throws(fn: () => Promise<any>, name: string, match?: RegExp) {
   ok((await api.nutrition.foods.lookupBarcode('4000001', fakeOff({ status: 0 }))).source === 'notfound', 'lookupBarcode reports not-found');
   ok((await api.nutrition.foods.lookupBarcode('4000002', fakeOff({}, 500))).source === 'error', 'network error returns a tagged outcome, never throws');
   ok((await api.nutrition.foods.lookupBarcode('bad')).source === 'notfound', 'invalid barcode handled gracefully');
+  // alcohol seed pack: OFF is thin on Australasian alcohol, so the library
+  // ships it — name-search works, and a scanned barcode can be attached once.
+  const palsHit = await api.nutrition.foods.search('pals vodka lime');
+  ok(palsHit.some((f: any) => f.brand === 'Pals'), `alcohol seed: Pals findable by name (${palsHit.length} hits)`);
+  const seltzerHit = await api.nutrition.foods.search('vodka seltzer');
+  ok(seltzerHit.some((f: any) => f.confidence === 'high'), 'alcohol seed: generic seltzer row present');
+  const palsFood = palsHit.find((f: any) => f.brand === 'Pals')!;
+  const linked = await api.nutrition.foods.update(palsFood.id, { ...palsFood, barcode: '9421906859003' });
+  ok(linked.barcode === '9421906859003' && (await api.nutrition.foods.lookupBarcode('9421906859003')).source === 'local', 'attaching a scanned barcode to a library food makes re-scans local');
   // editing a scanned food must not wipe its barcode when the caller omits it
   const bfEdited = await api.nutrition.foods.update(bf.id, { name: 'Scan Cache Bar', serving_desc: '1 bar', kcal: 155, protein: 12 });
   ok(bfEdited.barcode === '5012345678900', 'editing a food without a barcode field keeps the stored barcode');

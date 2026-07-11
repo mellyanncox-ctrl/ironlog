@@ -38,8 +38,9 @@ export function LogFoodSheet({ open, onClose, date, mealType, onChanged }: {
   const [foodDraft, setFoodDraft] = useState<any | null>(null);
   const [mealPick, setMealPick] = useState(false);
   const [scan, setScan] = useState(false);
+  const [attachCode, setAttachCode] = useState<string | null>(null); // scanned barcode with no match — tap a food to link it
 
-  useEffect(() => { if (open) { setTab('all'); setQ(''); setPicked(null); setQuick(false); setScan(false); } }, [open]);
+  useEffect(() => { if (open) { setTab('all'); setQ(''); setPicked(null); setQuick(false); setScan(false); setAttachCode(null); } }, [open]);
   useEffect(() => {
     if (!open) return;
     if (tab === 'recent') api.nutrition.foods.recent().then(setList);
@@ -56,16 +57,31 @@ export function LogFoodSheet({ open, onClose, date, mealType, onChanged }: {
   }
 
   // Resolve a scanned barcode: local hit → log fast; Open Food Facts → prefill a
-  // new-food form (which caches it for offline re-scan); miss/offline → manual add.
+  // new-food form (which caches it for offline re-scan); miss/offline/error →
+  // attach mode: search the library and tap a food to link the barcode to it
+  // (one tap for anything in the built-in library, e.g. alcohol OFF doesn't
+  // cover), or ＋ Food to add it new. Either way it re-scans locally forever.
   async function onScanned(code: string) {
     setScan(false);
     const r = await api.nutrition.foods.lookupBarcode(code);
     if (r.source === 'local') { setPicked(r.food); setQty('1'); return; }
     if (r.source === 'off') { setFoodDraft({ ...r.draft }); setNewFood(true); showToast(`Found: ${r.draft.name}`, 'ok'); return; }
-    if (r.source === 'offline') showToast('Offline — type the food in, it’ll scan next time', 'error');
-    else if (r.source === 'error') showToast(r.message || 'Lookup failed', 'error');
-    else showToast('Not in the food database — add it once and it’s saved', 'error');
-    setFoodDraft({ barcode: code, name: '' }); setNewFood(true);
+    if (r.source === 'offline') showToast('Offline — search the library and tap a match to link this barcode', 'error');
+    else if (r.source === 'error') showToast(r.message || 'Lookup failed — you can still link the barcode to a food', 'error');
+    else showToast('Not found online — tap a matching food to link this barcode, or add it new', 'error');
+    setAttachCode(code);
+  }
+
+  // Tap while a scanned barcode is pending → save the code onto that food, so
+  // the next scan is an instant local (offline) hit.
+  async function pickFood(f: Food) {
+    if (attachCode) {
+      const updated = await api.nutrition.foods.update(f.id, { ...f, barcode: attachCode });
+      setAttachCode(null);
+      showToast(`Barcode linked to ${updated.name} — scans find it instantly now`, 'ok');
+      setPicked(updated); setQty('1'); return;
+    }
+    setPicked(f); setQty('1');
   }
 
   const preview = picked ? scaled(picked, Number(qty) || 0) : null;
@@ -80,6 +96,16 @@ export function LogFoodSheet({ open, onClose, date, mealType, onChanged }: {
         <Button small kind="ghost" className="flex-1" onClick={() => { setFoodDraft(null); setNewFood(true); }}>＋ Food</Button>
       </div>
 
+      {/* pending barcode banner — scan missed, waiting for a food to link it to */}
+      {attachCode && (
+        <div className="flex items-center gap-2 mb-2 px-3 py-2 rounded-xl bg-accent/10 border border-accent/30 text-[12.5px]">
+          <span className="grow min-w-0">Barcode <span className="font-mono">{attachCode}</span> — tap a food to link it</span>
+          <button onClick={() => { setFoodDraft({ barcode: attachCode, name: '' }); setAttachCode(null); setNewFood(true); }}
+            className="shrink-0 underline">Add new</button>
+          <button onClick={() => setAttachCode(null)} aria-label="Dismiss" className="shrink-0 text-mut">✕</button>
+        </div>
+      )}
+
       <TextInput autoFocus placeholder="Search foods…" value={q}
         onChange={(e) => { setQ(e.target.value); if (tab !== 'all') setTab('all'); }} className="mb-2" />
       <Seg className="mb-3" value={tab} onChange={(v) => setTab(v as any)}
@@ -90,7 +116,7 @@ export function LogFoodSheet({ open, onClose, date, mealType, onChanged }: {
         : (
           <div className="space-y-1.5">
             {list.map((f) => (
-              <button key={f.id} onClick={() => { setPicked(f); setQty('1'); }}
+              <button key={f.id} onClick={() => pickFood(f)}
                 className="w-full flex items-center gap-2 text-left bg-surface2 border border-edge rounded-xl px-3 py-2.5 active:bg-edge">
                 <span className="grow min-w-0">
                   <span className="block text-[14px] font-medium truncate">{f.name}{f.favourite ? ' ★' : ''}</span>
