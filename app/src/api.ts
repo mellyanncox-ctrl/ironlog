@@ -356,6 +356,32 @@ export const api = {
     },
   },
 
+  // Triathlon Pink training plan: the plan itself lives in the screen; here we
+  // only persist which task ids have been ticked off, as a JSON array in the
+  // settings KV. Additive — no schema change, backs up with everything else.
+  tripink: {
+    get: async (): Promise<string[]> => {
+      await ok();
+      try { return JSON.parse(getSetting('tripink_done', '[]')) as string[]; } catch { return []; }
+    },
+    toggle: async (id: string): Promise<string[]> => {
+      await ok();
+      let done: string[]; try { done = JSON.parse(getSetting('tripink_done', '[]')); } catch { done = []; }
+      const set = new Set(done);
+      if (set.has(id)) set.delete(id); else set.add(id);
+      const arr = [...set];
+      setSetting('tripink_done', JSON.stringify(arr));
+      await flush();
+      return arr;
+    },
+    reset: async (): Promise<string[]> => {
+      await ok();
+      setSetting('tripink_done', '[]');
+      await flush();
+      return [];
+    },
+  },
+
   exercises: {
     list: async (): Promise<Exercise[]> => { await ok(); return getDb().prepare('SELECT * FROM exercises WHERE archived = 0 ORDER BY name').all() as Exercise[]; },
     getOne: async (id: number): Promise<Exercise | null> => { await ok(); return (getDb().prepare('SELECT * FROM exercises WHERE id = ?').get(id) as Exercise) || null; },

@@ -12,6 +12,7 @@ import { Garmin, ActivityDetail } from './screens/Garmin';
 import { Runs } from './screens/Runs';
 import { Swims } from './screens/Swims';
 import { Photos } from './screens/Photos';
+import { TriathlonPink } from './screens/TriathlonPink';
 import { SettingsScreen } from './screens/Settings';
 import { WorkoutScreen } from './screens/Workout';
 import { RestTimerBar } from './components/RestTimer';
@@ -39,7 +40,7 @@ const TABS = [
 const TITLES: Record<string, string> = {
   '': 'STRONG', food: 'Nutrition', history: 'History', routines: 'Routines', progress: 'Progress',
   library: 'Exercises', reports: 'Reports', garmin: 'Garmin', runs: 'Runs', swims: 'Swims',
-  activity: 'Activity', photos: 'Progress photos', settings: 'Settings', more: 'More',
+  activity: 'Activity', photos: 'Progress photos', tripink: 'Triathlon Pink', settings: 'Settings', more: 'More',
 };
 
 export default function App() {
@@ -124,6 +125,7 @@ export default function App() {
       {base === 'runs' && <Runs onNav={nav} />}
       {base === 'swims' && <Swims onNav={nav} />}
       {base === 'photos' && <Photos />}
+      {base === 'tripink' && <TriathlonPink />}
       {base === 'settings' && <SettingsScreen settings={boot.settings} onChange={(s) => setBoot({ ...boot, settings: s })} />}
       {base === 'more' && <More onNav={nav} />}
 
@@ -139,7 +141,7 @@ export default function App() {
       <nav className="fixed bottom-0 left-0 right-0 z-30 bg-bg/90 backdrop-blur border-t border-edge">
         <div className="max-w-lg mx-auto flex pb-[env(safe-area-inset-bottom)]">
           {TABS.map((t) => {
-            const active = base === t.key || (t.key === 'more' && ['history', 'library', 'garmin', 'reports', 'settings', 'runs', 'swims', 'photos', 'activity'].includes(base));
+            const active = base === t.key || (t.key === 'more' && ['history', 'library', 'garmin', 'reports', 'settings', 'runs', 'swims', 'photos', 'tripink', 'activity'].includes(base));
             return (
               <button key={t.key} onClick={() => nav(t.key)}
                 className={cx('flex-1 pt-2.5 pb-2 flex flex-col items-center gap-0.5 transition-colors', active ? 'text-accent' : 'text-dim')}>
@@ -162,6 +164,7 @@ export default function App() {
 
 function More({ onNav }: { onNav: (r: string) => void }) {
   const items = [
+    { key: 'tripink', icon: '🏅', label: 'Triathlon Pink', sub: 'Your 16-week plan to the Perth Long — tick off each week' },
     { key: 'history', icon: '☰', label: 'Workout history', sub: 'Every logged session, PRs, and details' },
     { key: 'library', icon: '🏋️', label: 'Exercise library', sub: 'Browse, search, and add custom exercises' },
     { key: 'photos', icon: '📸', label: 'Progress photos', sub: 'Weekly shots, side-by-side compare' },
