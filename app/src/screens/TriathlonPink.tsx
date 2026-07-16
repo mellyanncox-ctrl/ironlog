@@ -284,10 +284,15 @@ function Chip({ children }: { children: React.ReactNode }) {
   );
 }
 
-// Triathlon Pink wordmark, reproduced as a scalable inline SVG so it renders
-// crisply and works fully offline (white script "triathlon" over heavy magenta
-// "PINK"). Apple script/heavy faces first, with graceful fallbacks.
+// Official Triathlon Pink wordmark. Loads the bundled PNG (app/public/
+// triathlon-pink.png) — precached by the PWA so it works offline. If that file
+// isn't present it falls back to a scalable SVG rendering of the same wordmark.
+const LOGO_SRC = import.meta.env.BASE_URL + 'triathlon-pink.png';
 export function TriPinkLogo({ className }: { className?: string }) {
+  const [failed, setFailed] = useState(false);
+  if (!failed) {
+    return <img src={LOGO_SRC} alt="Triathlon Pink" className={className} onError={() => setFailed(true)} />;
+  }
   return (
     <svg viewBox="0 0 300 128" className={className} xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Triathlon Pink">
       <text x="152" y="52" textAnchor="middle" fill="#ffffff"
