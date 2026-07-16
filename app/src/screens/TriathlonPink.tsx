@@ -287,7 +287,7 @@ function Chip({ children }: { children: React.ReactNode }) {
 // Official Triathlon Pink wordmark. Loads the bundled PNG (app/public/
 // triathlon-pink.png) — precached by the PWA so it works offline. If that file
 // isn't present it falls back to a scalable SVG rendering of the same wordmark.
-const LOGO_SRC = import.meta.env.BASE_URL + 'triathlon-pink.png';
+const LOGO_SRC = 'triathlon-pink.png'; // in app/public/, relative to base (./)
 export function TriPinkLogo({ className }: { className?: string }) {
   const [failed, setFailed] = useState(false);
   if (!failed) {
