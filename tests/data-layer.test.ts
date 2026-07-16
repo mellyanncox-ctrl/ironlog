@@ -170,14 +170,18 @@ async function throws(fn: () => Promise<any>, name: string, match?: RegExp) {
   await api.workouts.remove(stray3.id);
 
   console.log('14. Progress photos');
+  // Anchor to today, not a hardcoded date: the demo seeds bodyweight for the
+  // last 14 days relative to now, so a fixed past date eventually falls before
+  // the earliest seeded weight and nearestWeight returns null (a date time bomb).
+  const photoDate = new Date().toISOString().slice(0, 10);
   const jpeg = new Blob([new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 4, 5])], { type: 'image/jpeg' });
-  const photo = await api.photos.add({ blob: jpeg, date: '2026-07-01', note: 'front relaxed', width: 800, height: 1066 });
+  const photo = await api.photos.add({ blob: jpeg, date: photoDate, note: 'front relaxed', width: 800, height: 1066 });
   ok(photo.id > 0 && photo.blob_key.length > 0, 'photo metadata stored');
   const gotBlob = await api.photos.blob(photo.blob_key);
   ok(gotBlob != null && gotBlob.size === jpeg.size, 'photo blob stored and retrievable');
   const plist = await api.photos.list();
   ok(plist.length === 1 && plist[0].note === 'front relaxed', 'photo list');
-  const nw = await api.photos.nearestWeight('2026-07-01');
+  const nw = await api.photos.nearestWeight(photoDate);
   ok(nw != null && nw > 50, `nearest bodyweight found (${nw}kg)`);
   await api.photos.updateNote(photo.id, 'front, morning');
   ok((await api.photos.list())[0].note === 'front, morning', 'note editable');

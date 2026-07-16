@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { api, Overview, Template, GarminDaily, WorkoutSummary, GarminActivity, ProgressPhoto, DayView } from '../api';
 import { Card, Button, Stat, Pill } from '../components/ui';
 import { MACRO } from '../components/nutrition';
-import { fmtVolume, fmtDate, todayDow, DOW, fmtDuration, fmtDistance, fmtPace, isoWeekStartLocal, todayISO, cx } from '../util';
+import { fmtVolume, fmtDate, todayDow, DOW, fmtDuration, fmtDistance, fmtPace, fmtSwimDistance, fmtSwimPace, isoWeekStartLocal, todayISO, cx } from '../util';
 
 export function Home({ onStartTemplate, onStartBlank, onResume, activeId, onNav }: {
   onStartTemplate: (id: number) => void; onStartBlank: () => void;
@@ -13,6 +13,7 @@ export function Home({ onStartTemplate, onStartBlank, onResume, activeId, onNav 
   const [recent, setRecent] = useState<WorkoutSummary[]>([]);
   const [daily, setDaily] = useState<GarminDaily[]>([]);
   const [lastRun, setLastRun] = useState<GarminActivity | null>(null);
+  const [lastSwim, setLastSwim] = useState<GarminActivity | null>(null);
   const [photos, setPhotos] = useState<ProgressPhoto[]>([]);
   const [nutri, setNutri] = useState<DayView | null>(null);
 
@@ -22,6 +23,7 @@ export function Home({ onStartTemplate, onStartBlank, onResume, activeId, onNav 
     api.workouts.list(3).then(setRecent);
     api.garmin.daily().then(setDaily).catch(() => {});
     api.garmin.runs(1).then((r) => setLastRun(r[0] || null)).catch(() => {});
+    api.garmin.swims(1).then((s) => setLastSwim(s[0] || null)).catch(() => {});
     api.photos.list().then(setPhotos).catch(() => {});
     api.nutrition.diary.day(todayISO()).then(setNutri).catch(() => {});
   }, [activeId]);
@@ -125,6 +127,22 @@ export function Home({ onStartTemplate, onStartBlank, onResume, activeId, onNav 
               <div>
                 <div className="text-[14px] font-semibold">🏃 {fmtDistance(lastRun.distance_m)} · {fmtPace(lastRun.duration_s, lastRun.distance_m)}</div>
                 <div className="text-[12px] text-mut">{fmtDate(lastRun.started_at)} · {fmtDuration(lastRun.duration_s)}{lastRun.avg_hr ? ` · ♥ ${lastRun.avg_hr} bpm` : ''}</div>
+              </div>
+              <span className="text-dim">›</span>
+            </div>
+          </Card>
+        </div>
+      )}
+
+      {/* last swim */}
+      {lastSwim && (
+        <div>
+          <SectionTitle>Last swim</SectionTitle>
+          <Card className="px-4 py-3" onClick={() => onNav('swims')}>
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-[14px] font-semibold">🏊 {fmtSwimDistance(lastSwim.distance_m)} · {fmtSwimPace(lastSwim.duration_s, lastSwim.distance_m)}</div>
+                <div className="text-[12px] text-mut">{fmtDate(lastSwim.started_at)} · {fmtDuration(lastSwim.duration_s)}{lastSwim.avg_hr ? ` · ♥ ${lastSwim.avg_hr} bpm` : ''}</div>
               </div>
               <span className="text-dim">›</span>
             </div>
