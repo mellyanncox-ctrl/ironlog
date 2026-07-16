@@ -676,6 +676,10 @@ export const api = {
       await ok();
       return getDb().prepare("SELECT * FROM garmin_activities WHERE activity_type = 'running' ORDER BY started_at DESC LIMIT ?").all(limit) as GarminActivity[];
     },
+    swims: async (limit = 200): Promise<GarminActivity[]> => {
+      await ok();
+      return getDb().prepare("SELECT * FROM garmin_activities WHERE activity_type = 'swimming' ORDER BY started_at DESC LIMIT ?").all(limit) as GarminActivity[];
+    },
 
     // Auto-sync: pulls the snapshot published by the /sync job from a private
     // GitHub repo. Config (incl. the read-only token) lives in the on-device

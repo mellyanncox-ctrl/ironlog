@@ -89,6 +89,19 @@ export function fmtPace(durationS: number | null | undefined, distanceM: number 
   const min = Math.floor(secPerUnit / 60), sec = Math.round(secPerUnit % 60);
   return `${min}:${String(sec).padStart(2, '0')} /${getUnits() === 'lb' ? 'mi' : 'km'}`;
 }
+// Swimming is metric worldwide (pools are in metres, Garmin reports metres),
+// so swims always show in metres and pace per 100 m regardless of the weight-unit setting.
+export function fmtSwimDistance(m: number | null | undefined): string {
+  if (m == null) return '—';
+  if (m >= 5000) return `${(m / 1000).toFixed(2)} km`;
+  return `${Math.round(m).toLocaleString()} m`;
+}
+export function fmtSwimPace(durationS: number | null | undefined, distanceM: number | null | undefined): string {
+  if (!durationS || !distanceM || distanceM <= 0) return '—';
+  const secPer100 = durationS / (distanceM / 100);
+  const min = Math.floor(secPer100 / 60), sec = Math.round(secPer100 % 60);
+  return `${min}:${String(sec).padStart(2, '0')} /100m`;
+}
 export function isoWeekStartLocal(dateISO: string): string {
   const d = new Date(dateISO.length === 10 ? dateISO + 'T00:00:00' : dateISO);
   const dow = (d.getDay() + 6) % 7;

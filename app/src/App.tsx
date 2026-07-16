@@ -10,6 +10,7 @@ import { Progress } from './screens/Progress';
 import { Reports } from './screens/Reports';
 import { Garmin, ActivityDetail } from './screens/Garmin';
 import { Runs } from './screens/Runs';
+import { Swims } from './screens/Swims';
 import { Photos } from './screens/Photos';
 import { SettingsScreen } from './screens/Settings';
 import { WorkoutScreen } from './screens/Workout';
@@ -37,7 +38,7 @@ const TABS = [
 
 const TITLES: Record<string, string> = {
   '': 'STRONG', food: 'Nutrition', history: 'History', routines: 'Routines', progress: 'Progress',
-  library: 'Exercises', reports: 'Reports', garmin: 'Garmin', runs: 'Runs',
+  library: 'Exercises', reports: 'Reports', garmin: 'Garmin', runs: 'Runs', swims: 'Swims',
   activity: 'Activity', photos: 'Progress photos', settings: 'Settings', more: 'More',
 };
 
@@ -121,6 +122,7 @@ export default function App() {
       {base === 'garmin' && <Garmin onNav={nav} />}
       {base === 'activity' && seg[1] && <ActivityDetail id={Number(seg[1])} onNav={nav} />}
       {base === 'runs' && <Runs onNav={nav} />}
+      {base === 'swims' && <Swims onNav={nav} />}
       {base === 'photos' && <Photos />}
       {base === 'settings' && <SettingsScreen settings={boot.settings} onChange={(s) => setBoot({ ...boot, settings: s })} />}
       {base === 'more' && <More onNav={nav} />}
@@ -137,7 +139,7 @@ export default function App() {
       <nav className="fixed bottom-0 left-0 right-0 z-30 bg-bg/90 backdrop-blur border-t border-edge">
         <div className="max-w-lg mx-auto flex pb-[env(safe-area-inset-bottom)]">
           {TABS.map((t) => {
-            const active = base === t.key || (t.key === 'more' && ['history', 'library', 'garmin', 'reports', 'settings', 'runs', 'photos', 'activity'].includes(base));
+            const active = base === t.key || (t.key === 'more' && ['history', 'library', 'garmin', 'reports', 'settings', 'runs', 'swims', 'photos', 'activity'].includes(base));
             return (
               <button key={t.key} onClick={() => nav(t.key)}
                 className={cx('flex-1 pt-2.5 pb-2 flex flex-col items-center gap-0.5 transition-colors', active ? 'text-accent' : 'text-dim')}>
@@ -164,6 +166,7 @@ function More({ onNav }: { onNav: (r: string) => void }) {
     { key: 'library', icon: '🏋️', label: 'Exercise library', sub: 'Browse, search, and add custom exercises' },
     { key: 'photos', icon: '📸', label: 'Progress photos', sub: 'Weekly shots, side-by-side compare' },
     { key: 'runs', icon: '🏃', label: 'Runs', sub: 'Distance, pace, and weekly mileage from Garmin' },
+    { key: 'swims', icon: '🏊', label: 'Swims', sub: 'Distance, pace per 100 m, and weekly volume from Garmin' },
     { key: 'reports', icon: '📊', label: 'Weekly & monthly reports', sub: 'Volume, PRs, muscle balance, recovery' },
     { key: 'garmin', icon: '⌚', label: 'Garmin import', sub: 'Import activities and wellness data' },
     { key: 'settings', icon: '⚙️', label: 'Settings', sub: 'Units, rest timer, backup, data' },
